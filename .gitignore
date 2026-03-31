@@ -1,0 +1,21 @@
+# 개발 도구
+.claude/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 로컬 데이터 (이미지, DB)
+data/
+
+# ngrok 설정 (토큰 등 민감 정보 포함)
+ngrok.yml
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
