@@ -89,6 +89,9 @@ def _render_room_management() -> None:
 
     with st.form("create_room_form", clear_on_submit=True):
         room_id = st.text_input("호실 번호 (예: 101, A-205)", placeholder="101")
+        col_sid, col_sname = st.columns(2)
+        student_id   = col_sid.text_input("배정 학생 학번", placeholder="2024123456")
+        student_name = col_sname.text_input("배정 학생 이름", placeholder="홍길동")
         ref_file = st.file_uploader(
             "기준 사진 업로드",
             type=["jpg", "jpeg", "png", "webp", "bmp"],
@@ -105,7 +108,13 @@ def _render_room_management() -> None:
             create_room(room_id)  # 이미 존재하면 무시
             # 기준 사진 저장
             path = save_image_bytes(room_id, "ref", ref_file.getvalue())
-            update_room(room_id, ref_image_path=path, status="ready")
+            update_room(
+                room_id,
+                ref_image_path=path,
+                status="ready",
+                student_id=student_id.strip(),
+                student_name=student_name.strip(),
+            )
             st.success(f"호실 **{room_id}** 이 등록되었습니다.")
             st.rerun()
 
@@ -118,21 +127,25 @@ def _render_room_management() -> None:
         return
 
     # 컬럼 헤더
-    hcol = st.columns([1, 2, 1])
+    hcol = st.columns([1, 1.5, 1.5, 2, 1])
     hcol[0].markdown("**호실**")
-    hcol[1].markdown("**상태**")
-    hcol[2].markdown("**기준 사진**")
+    hcol[1].markdown("**학번**")
+    hcol[2].markdown("**이름**")
+    hcol[3].markdown("**상태**")
+    hcol[4].markdown("**기준 사진**")
     st.divider()
 
     for rid, room in rooms.items():
-        row = st.columns([1, 2, 1])
+        row = st.columns([1, 1.5, 1.5, 2, 1])
         row[0].write(rid)
-        row[1].write(STATUS_LABELS.get(room["status"], room["status"]))
+        row[1].write(room.get("student_id") or "—")
+        row[2].write(room.get("student_name") or "—")
+        row[3].write(STATUS_LABELS.get(room["status"], room["status"]))
         ref_img = load_image(room.get("ref_image_path"))
         if ref_img is not None:
-            row[2].image(bgr_to_rgb(ref_img), width=80)
+            row[4].image(bgr_to_rgb(ref_img), width=80)
         else:
-            row[2].caption("없음")
+            row[4].caption("없음")
 
 
 def _render_review_queue() -> None:

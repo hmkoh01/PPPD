@@ -2,8 +2,7 @@
 학생(점검대상자) 전용 앱.
 
 Step 1 — 입사 초기 사진 촬영:
-    관리자가 등록한 기준 사진을 오버레이로 띄워 구도를 맞추고 캡처합니다.
-    오버레이 방식은 👻 Ghost / 🟢 Edge 중 토글로 선택합니다.
+    관리자가 등록한 기준 사진을 윤곽선(Edge) 오버레이로 띄워 구도를 맞추고 캡처합니다.
 
 Step 2 — 퇴사 최종 사진 촬영:
     Step 1에서 찍은 초기 사진을 오버레이 가이드로 삼아 최종 사진을 캡처합니다.
@@ -13,6 +12,8 @@ Step 3 — 차이점 검증 (Human-in-the-loop):
     AI가 찾은 붉은 박스 영역을 갤러리로 보여주고,
     각 항목마다 클로즈업 촬영 → VLM 모의 분석 → 색상 업데이트를 진행합니다.
     모든 이슈가 초록/주황으로 해소되면 최종 제출 버튼이 활성화됩니다.
+
+주의: 카메라 사용을 위해 반드시 HTTPS 또는 localhost 환경에서 실행해야 합니다.
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ import av
 import cv2
 import numpy as np
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit_webrtc import RTCConfiguration, VideoProcessorBase, webrtc_streamer
 
 from utils.db_utils import (
@@ -63,10 +65,6 @@ RTC_CONFIGURATION = RTCConfiguration({
 _CMP_SIZE     = (128, 128)
 _MSE_THRESHOLD = 3000.0
 
-# Ghost 오버레이 가중치
-_GHOST_CAM = 0.7
-_GHOST_REF = 0.3
-
 # Edge 오버레이 파라미터
 _EDGE_CANNY_LOW  = 40
 _EDGE_CANNY_HIGH = 110
@@ -85,12 +83,11 @@ _BOX_COLOR = {
 
 class VideoProcessor(VideoProcessorBase):
     """
-    Ghost Overlay와 Edge Overlay를 하나의 클래스에서 지원하는 통합 프로세서.
+    Edge Overlay 프로세서.
 
-    set_reference(ref_bgr, mode) 로 기준 이미지와 오버레이 모드를 주입합니다.
-    set_overlay_mode(mode) 로 스트림을 유지한 채 모드만 전환합니다.
+    set_reference(ref_bgr) 로 기준 이미지를 주입합니다.
 
-    recv() 에서는 오버레이 합성 + 중앙 십자선 + MSE 구도 판정만 수행합니다.
+    recv() 에서는 윤곽선 오버레이 합성 + 중앙 십자선 + MSE 구도 판정만 수행합니다.
     (붉은 박스는 그리지 않습니다 — 캡처 후 1회성 detect_difference로 처리)
     """
 
@@ -100,10 +97,8 @@ class VideoProcessor(VideoProcessorBase):
         # 기준 이미지 관련 데이터
         self._ref_bgr: np.ndarray | None        = None
         self._ref_gray_small: np.ndarray | None = None
-        self._overlay_mode: str                  = "ghost"   # "ghost" | "edge"
 
         # 오버레이 캐시 (카메라 해상도가 바뀔 때만 재계산)
-        self._cached_ghost: np.ndarray | None     = None   # BGR, 3ch letterbox
         self._cached_edge_mask: np.ndarray | None = None   # uint8, 1ch letterbox
         self._cached_frame_size: tuple[int, int]  = (0, 0)
 
@@ -115,9 +110,9 @@ class VideoProcessor(VideoProcessorBase):
 
     # ── 외부 인터페이스 ────────────────────────────────────────────────
 
-    def set_reference(self, ref_bgr: np.ndarray, mode: str = "ghost") -> None:
+    def set_reference(self, ref_bgr: np.ndarray) -> None:
         """
-        기준 이미지와 오버레이 모드를 주입합니다.
+        기준 이미지를 주입합니다.
         기준 이미지가 바뀌면 캐시를 초기화합니다.
         """
         gray       = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2GRAY)
@@ -126,19 +121,9 @@ class VideoProcessor(VideoProcessorBase):
         with self._lock:
             self._ref_bgr             = ref_bgr.copy()
             self._ref_gray_small      = gray_small
-            self._overlay_mode        = mode
             # 기준 이미지 교체 시 캐시 무효화
-            self._cached_ghost        = None
             self._cached_edge_mask    = None
             self._cached_frame_size   = (0, 0)
-
-    def set_overlay_mode(self, mode: str) -> None:
-        """
-        스트림을 유지한 채 오버레이 모드만 전환합니다.
-        Ghost ↔ Edge 토글 버튼에서 호출됩니다.
-        """
-        with self._lock:
-            self._overlay_mode = mode
 
     @property
     def is_aligned(self) -> bool:
@@ -155,7 +140,7 @@ class VideoProcessor(VideoProcessorBase):
 
     def _rebuild_cache(self, ref_bgr: np.ndarray, w: int, h: int) -> None:
         """
-        카메라 해상도(w, h)에 맞게 Ghost/Edge 오버레이를 사전 계산합니다.
+        카메라 해상도(w, h)에 맞게 Edge 오버레이를 사전 계산합니다.
         Letterbox 방식으로 기준 사진의 종횡비를 보존합니다.
         """
         rh, rw = ref_bgr.shape[:2]
@@ -164,11 +149,6 @@ class VideoProcessor(VideoProcessorBase):
         fit_h  = int(rh * scale)
         x0     = (w - fit_w) // 2
         y0     = (h - fit_h) // 2
-
-        # -- Ghost: BGR 3채널 letterbox 이미지 --
-        scaled_bgr  = cv2.resize(ref_bgr, (fit_w, fit_h), interpolation=cv2.INTER_LINEAR)
-        ghost_canvas = np.zeros((h, w, 3), dtype=np.uint8)
-        ghost_canvas[y0:y0 + fit_h, x0:x0 + fit_w] = scaled_bgr
 
         # -- Edge: 1채널 이진 마스크 letterbox --
         gray_ref   = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2GRAY)
@@ -181,7 +161,6 @@ class VideoProcessor(VideoProcessorBase):
         edge_canvas[y0:y0 + fit_h, x0:x0 + fit_w] = scaled_edge
 
         with self._lock:
-            self._cached_ghost      = ghost_canvas
             self._cached_edge_mask  = edge_canvas
             self._cached_frame_size = (w, h)
 
@@ -190,7 +169,7 @@ class VideoProcessor(VideoProcessorBase):
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         """
         매 프레임:
-        1. 오버레이 합성 (Ghost 또는 Edge)
+        1. 윤곽선(Edge) 오버레이 합성
         2. 중앙 십자선
         3. MSE 구도 일치 판정
         """
@@ -202,27 +181,22 @@ class VideoProcessor(VideoProcessorBase):
             with self._lock:
                 ref_bgr        = self._ref_bgr
                 ref_gray_small = self._ref_gray_small
-                mode           = self._overlay_mode
                 self._latest_frame = img_orig
 
             if ref_bgr is not None:
                 # 해상도 변경 시 캐시 재계산 (매 프레임 resize를 피함)
-                if (w, h) != self._cached_frame_size or self._cached_ghost is None:
+                if (w, h) != self._cached_frame_size or self._cached_edge_mask is None:
                     self._rebuild_cache(ref_bgr, w, h)
 
-                if mode == "ghost":
-                    # 웹캠 70% + 기준 사진 30% 알파 블렌딩
-                    img = cv2.addWeighted(img, _GHOST_CAM, self._cached_ghost, _GHOST_REF, 0)
-                else:
-                    # Edge: mask==255 픽셀에만 직접 색 덧씌움 (검은 그림자 방지)
-                    mask = self._cached_edge_mask
-                    if mask is not None:
-                        edge_px = mask == 255
-                        if edge_px.any():
-                            cam_vals = img[edge_px].astype(np.float32)
-                            color    = np.array(_EDGE_COLOR, dtype=np.float32)
-                            blended  = cam_vals * (1 - _EDGE_ALPHA) + color * _EDGE_ALPHA
-                            img[edge_px] = np.clip(blended, 0, 255).astype(np.uint8)
+                # Edge: mask==255 픽셀에만 직접 색 덧씌움 (검은 그림자 방지)
+                mask = self._cached_edge_mask
+                if mask is not None:
+                    edge_px = mask == 255
+                    if edge_px.any():
+                        cam_vals = img[edge_px].astype(np.float32)
+                        color    = np.array(_EDGE_COLOR, dtype=np.float32)
+                        blended  = cam_vals * (1 - _EDGE_ALPHA) + color * _EDGE_ALPHA
+                        img[edge_px] = np.clip(blended, 0, 255).astype(np.uint8)
 
             # 중앙 십자선: 구도 정렬 가이드
             cx, cy = w // 2, h // 2
@@ -299,15 +273,16 @@ def decode_bytes(data: bytes) -> np.ndarray | None:
 
 def _init_session_state() -> None:
     defaults: dict = {
-        "student_step":             1,
-        "student_room_id":          None,
-        "student_overlay_mode":     "ghost",
-        "student_ref_bgr":          None,      # 관리자가 등록한 기준 사진 (ndarray)
-        "student_initial_bgr":      None,      # Step1 캡처 초기 사진 (ndarray)
-        "student_final_aligned_bgr": None,     # Step2 정합 완료 최종 사진 (ndarray)
-        "student_issues":           [],        # [{box_coords, status, closeup_bgr, vlm_reason}]
-        "webrtc_key_1":             0,         # Step1 webrtc 리셋용 카운터
-        "webrtc_key_2":             0,         # Step2 webrtc 리셋용 카운터
+        "student_step":              0,         # 0=인증, 1=초기촬영, 2=최종촬영, 3=검증/제출
+        "student_id_input":          "",        # Step0 입력 학번
+        "student_name_input":        "",        # Step0 입력 이름
+        "student_room_id":           None,
+        "student_ref_bgr":           None,      # 관리자가 등록한 기준 사진 (ndarray)
+        "student_initial_bgr":       None,      # Step1 캡처 초기 사진 (ndarray)
+        "student_final_aligned_bgr": None,      # Step2 정합 완료 최종 사진 (ndarray)
+        "student_issues":            [],        # [{box_coords, status, closeup_bgr, vlm_reason}]
+        "webrtc_key_1":              0,         # Step1 webrtc 리셋용 카운터
+        "webrtc_key_2":              0,         # Step2 webrtc 리셋용 카운터
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -315,9 +290,10 @@ def _init_session_state() -> None:
 
 
 def _reset_flow() -> None:
-    """처음부터 다시 시작합니다."""
+    """처음부터 다시 시작합니다 (Step 0 인증 화면으로 복귀)."""
     keys_to_reset = [
-        "student_step", "student_room_id", "student_overlay_mode",
+        "student_step", "student_id_input", "student_name_input",
+        "student_room_id",
         "student_ref_bgr", "student_initial_bgr", "student_final_aligned_bgr",
         "student_issues",
     ]
@@ -331,6 +307,45 @@ def _reset_flow() -> None:
 
 # ── Step 렌더러 ────────────────────────────────────────────────────────────
 
+def _render_step0() -> None:
+    """
+    Step 0: 학생 인증.
+    학번과 이름을 입력받아 관리자가 배정한 호실을 자동 매칭합니다.
+    """
+    st.subheader("Step 0  —  🎓 학생 인증")
+    st.caption("배정받은 학번과 이름을 입력하면 호실이 자동으로 확인됩니다.")
+
+    sid   = st.text_input("학번", placeholder="2024123456", key="input_sid")
+    sname = st.text_input("이름", placeholder="홍길동",     key="input_sname")
+
+    if st.button("🚀 시작하기", use_container_width=True, type="primary"):
+        sid_val   = sid.strip()
+        sname_val = sname.strip()
+        if not sid_val or not sname_val:
+            st.error("학번과 이름을 모두 입력해 주세요.")
+            return
+
+        rooms = get_all_rooms()
+        matched_room_id = None
+        for rid, room in rooms.items():
+            if (
+                room.get("student_id", "").strip()   == sid_val
+                and room.get("student_name", "").strip() == sname_val
+            ):
+                matched_room_id = rid
+                break
+
+        if matched_room_id is None:
+            st.warning("일치하는 배정 정보가 없습니다. 학번·이름을 확인하거나 관리자에게 문의하세요.")
+            return
+
+        st.session_state.student_id_input   = sid_val
+        st.session_state.student_name_input = sname_val
+        st.session_state.student_room_id    = matched_room_id
+        st.session_state.student_step       = 1
+        st.rerun()
+
+
 def _render_step1() -> None:
     """
     Step 1: 입사 — 초기 사진 촬영.
@@ -339,48 +354,26 @@ def _render_step1() -> None:
     st.subheader("Step 1 / 3  —  📷 입사 초기 사진 촬영")
     st.caption("기준 사진 오버레이에 카메라를 맞추고 '캡처' 버튼을 눌러 주세요.")
 
-    # ── 호실 선택 ────────────────────────────────────────────────────
-    rooms = get_all_rooms()
-    # 기준 사진이 등록되어 있고 아직 입사 완료되지 않은 호실만 표시
-    available = {
-        rid: r for rid, r in rooms.items()
-        if r.get("ref_image_path") and r["status"] in ("ready", "checked_in")
-    }
-    if not available:
-        st.warning("현재 점검 가능한 호실이 없습니다. 관리자에게 문의하세요.")
+    # ── 호실 확인 (Step 0에서 자동 배정됨) ───────────────────────────
+    room_id = st.session_state.student_room_id
+    if not room_id:
+        st.error("호실 정보가 없습니다. 처음부터 다시 시작해 주세요.")
         return
 
-    room_id = st.selectbox(
-        "호실 선택",
-        options=list(available.keys()),
-        index=(
-            list(available.keys()).index(st.session_state.student_room_id)
-            if st.session_state.student_room_id in available
-            else 0
-        ),
-        format_func=lambda x: f"호실 {x}",
-    )
-    st.session_state.student_room_id = room_id
+    rooms = get_all_rooms()
+    room  = rooms.get(room_id)
+    if room is None or not room.get("ref_image_path"):
+        st.warning(f"호실 **{room_id}** 에 기준 사진이 등록되지 않았습니다. 관리자에게 문의하세요.")
+        return
 
-    # 기준 사진 로드 (호실이 바뀌면 다시 읽음)
-    room = available[room_id]
+    st.info(f"배정 호실: **{room_id}** ({st.session_state.student_name_input})")
+
+    # 기준 사진 로드
     ref_bgr = load_image(room.get("ref_image_path"))
     if ref_bgr is None:
         st.error("기준 사진을 불러올 수 없습니다.")
         return
     st.session_state.student_ref_bgr = ref_bgr
-
-    # ── 오버레이 모드 토글 ───────────────────────────────────────────
-    mode_col, _ = st.columns([2, 3])
-    with mode_col:
-        mode = st.radio(
-            "오버레이 방식",
-            options=["ghost", "edge"],
-            format_func=lambda x: "👻 유령(Ghost)" if x == "ghost" else "🟢 윤곽선(Edge)",
-            horizontal=True,
-            key="overlay_mode_radio_1",
-        )
-    st.session_state.student_overlay_mode = mode
 
     # ── WebRTC 스트림 ────────────────────────────────────────────────
     ctx = webrtc_streamer(
@@ -399,12 +392,10 @@ def _render_step1() -> None:
         async_processing=True,
     )
 
-    # VideoProcessor에 기준 이미지 및 모드 주입
+    # VideoProcessor에 기준 이미지 주입
     # (매 Streamlit 리렌더링마다 호출되지만, lock 내부에서 빠르게 처리됨)
     if ctx.video_processor is not None:
-        ctx.video_processor.set_reference(ref_bgr, mode)
-        # 모드 토글 전용: 기준 이미지가 동일하면 모드만 갱신
-        ctx.video_processor.set_overlay_mode(mode)
+        ctx.video_processor.set_reference(ref_bgr)
 
         if ctx.video_processor.is_aligned:
             st.success("✅ 구도 일치 — 지금 캡처해 주세요!")
@@ -462,18 +453,6 @@ def _render_step2() -> None:
             st.rerun()
         return
 
-    # ── 오버레이 모드 토글 ───────────────────────────────────────────
-    mode_col, _ = st.columns([2, 3])
-    with mode_col:
-        mode = st.radio(
-            "오버레이 방식",
-            options=["ghost", "edge"],
-            format_func=lambda x: "👻 유령(Ghost)" if x == "ghost" else "🟢 윤곽선(Edge)",
-            horizontal=True,
-            key="overlay_mode_radio_2",
-        )
-    st.session_state.student_overlay_mode = mode
-
     # ── WebRTC 스트림 ────────────────────────────────────────────────
     ctx = webrtc_streamer(
         key=f"step2_{st.session_state.webrtc_key_2}",
@@ -493,8 +472,7 @@ def _render_step2() -> None:
 
     if ctx.video_processor is not None:
         # 이번엔 초기 사진이 오버레이 가이드입니다.
-        ctx.video_processor.set_reference(initial_bgr, mode)
-        ctx.video_processor.set_overlay_mode(mode)
+        ctx.video_processor.set_reference(initial_bgr)
 
         if ctx.video_processor.is_aligned:
             st.success("✅ 구도 일치 — 지금 캡처해 주세요!")
@@ -599,7 +577,16 @@ def _render_step3() -> None:
             # VLM 사유 표시 (이미 분석된 경우)
             if issue["vlm_reason"]:
                 col.caption(f"🤖 {issue['vlm_reason']}")
-                continue   # 이미 처리된 항목은 버튼 생략
+                # 주황(의심) 결과인 경우 — 자율 조치 기회 제공
+                if issue["status"] == "orange":
+                    col.warning("먼지나 쓰레기가 감지되었습니다. 직접 청소 후 다시 촬영하시겠습니까?")
+                    if col.button("🔄 다시 촬영하기", key=f"retake_btn_{idx}"):
+                        st.session_state.student_issues[idx]["status"]      = "red"
+                        st.session_state.student_issues[idx]["vlm_reason"]  = None
+                        st.session_state.student_issues[idx]["closeup_bgr"] = None
+                        st.session_state[f"show_closeup_{idx}"] = False
+                        st.rerun()
+                continue   # 이미 처리된 항목은 아래 버튼 생략
 
             # 클로즈업 촬영 버튼 → camera_input 열기
             if col.button(f"🔍 클로즈업 촬영", key=f"closeup_btn_{idx}"):
@@ -653,6 +640,7 @@ def _submit_to_admin(room_id: str, issues: list[dict]) -> None:
     """
     클로즈업 이미지를 디스크에 저장하고,
     DB 이슈 목록을 업데이트한 뒤 status를 "pending_review"로 변경합니다.
+    완료 후 Step 4(대기 화면)로 이동합니다.
     """
     db_issues = []
     for i, issue in enumerate(issues):
@@ -669,17 +657,76 @@ def _submit_to_admin(room_id: str, issues: list[dict]) -> None:
         })
 
     update_room(room_id, issues=db_issues, status="pending_review")
+    st.session_state.student_step = 4
+    st.rerun()
 
-    st.success(
-        f"✅ 호실 **{room_id}** 의 점검 결과가 관리자에게 제출되었습니다.\n\n"
-        "관리자 검토 후 최종 합격/재점검 여부가 결정됩니다."
-    )
-    st.balloons()
 
-    # 흐름 초기화 (다음 사용자를 위해)
-    if st.button("🏠 처음으로 돌아가기"):
-        _reset_flow()
-        st.rerun()
+def _render_step4() -> None:
+    """
+    Step 4: 관리자 검토 대기 / 결과 화면.
+
+    - pending_review: 대기 중 안내 + 새로고침 버튼
+    - approved:       승인 완료 메시지 → 퇴사 안내
+    - rejected:       관리자 피드백 표시 → 재점검(Step 2) 유도
+    """
+    from utils.db_utils import get_room
+
+    room_id = st.session_state.student_room_id
+    room    = get_room(room_id)
+
+    if room is None:
+        st.error("호실 정보를 불러올 수 없습니다.")
+        return
+
+    status = room.get("status")
+
+    # ── 대기 중 ──────────────────────────────────────────────────────
+    if status == "pending_review":
+        st.subheader("⏳ 관리자 검토 대기 중")
+        st.info(
+            "점검 데이터가 성공적으로 제출되었습니다.\n\n"
+            "관리자가 사진을 검토하고 있습니다. 승인이 완료될 때까지 이 화면을 유지해 주세요."
+        )
+        if st.button("🔄 상태 새로고침", use_container_width=True):
+            st.rerun()
+
+    # ── 승인 완료 ─────────────────────────────────────────────────────
+    elif status == "approved":
+        st.subheader("✅ 점검이 승인되었습니다")
+        st.success(
+            "관리자가 퇴사 점검을 승인했습니다.\n\n"
+            "수고하셨습니다!"
+        )
+        feedback = room.get("admin_feedback", "").strip()
+        if feedback:
+            st.info(f"관리자 메모: {feedback}")
+        st.balloons()
+        if st.button("🏠 처음으로 돌아가기", use_container_width=True):
+            _reset_flow()
+            st.rerun()
+
+    # ── 재점검 요청 ───────────────────────────────────────────────────
+    elif status == "rejected":
+        st.subheader("🔴 재점검 요청")
+        st.warning("관리자로부터 재점검 요청이 왔습니다. 아래 피드백을 확인하고 다시 촬영해 주세요.")
+        feedback = room.get("admin_feedback", "").strip()
+        if feedback:
+            st.error(f"📋 관리자 피드백\n\n{feedback}")
+        else:
+            st.caption("(관리자 피드백 없음)")
+        st.divider()
+        if st.button("➡️ 재점검 계속하기", use_container_width=True, type="primary"):
+            # Step 2로 돌아가 재촬영
+            st.session_state.student_step    = 2
+            st.session_state.student_issues  = []
+            st.session_state.webrtc_key_2   += 1
+            st.rerun()
+
+    # ── 예외 상태 ─────────────────────────────────────────────────────
+    else:
+        st.info(f"현재 상태: {status}")
+        if st.button("🔄 새로고침", use_container_width=True):
+            st.rerun()
 
 
 # ── 메인 ──────────────────────────────────────────────────────────────────
@@ -690,13 +737,41 @@ def main() -> None:
         "<style>[data-testid='stSidebarNav']{display:none}</style>",
         unsafe_allow_html=True,
     )
+
+    # 보안 컨텍스트 확인 — HTTP(비localhost)에서는 카메라를 사용할 수 없습니다.
+    components.html(
+        """
+        <script>
+        if (!window.isSecureContext) {
+            const msg = document.createElement('div');
+            msg.style.cssText = 'background:#fff3cd;border:1px solid #ffc107;padding:12px 16px;'
+                + 'border-radius:6px;font-family:sans-serif;font-size:14px;color:#856404;margin:4px 0;';
+            msg.innerHTML = '<b>⚠️ 카메라 사용 불가 — 보안 컨텍스트가 아닙니다.</b><br>'
+                + '브라우저는 <code>localhost</code> 또는 <code>HTTPS</code> 환경에서만 카메라를 허용합니다.<br>'
+                + '현재 주소창의 IP 주소를 <b>localhost</b>로 바꿔서 접속해 보세요. '
+                + '(예: <code>http://localhost:8501</code>)';
+            document.body.appendChild(msg);
+        }
+        </script>
+        """,
+        height=0,
+    )
+
     _init_session_state()
 
     # 사이드바: 진행 상황 및 리셋 버튼
     with st.sidebar:
         st.header("📱 학생 점검 앱")
         step = st.session_state.student_step
-        st.progress(step / 3, text=f"진행: {step} / 3 단계")
+        _STEP_LABELS = {
+            0: "학생 인증 대기",
+            1: "1단계: 초기 사진 촬영",
+            2: "2단계: 최종 사진 촬영",
+            3: "3단계: 차이점 검증",
+            4: "검토 대기 중",
+        }
+        progress_val = min(step / 3, 1.0) if step > 0 else 0.0
+        st.progress(progress_val, text=_STEP_LABELS.get(step, f"단계 {step}"))
         st.divider()
         if st.button("↩️ 처음부터 다시 하기", use_container_width=True):
             _reset_flow()
@@ -705,12 +780,16 @@ def main() -> None:
     st.title("📱 학생 퇴사 점검")
 
     step = st.session_state.student_step
-    if step == 1:
+    if step == 0:
+        _render_step0()
+    elif step == 1:
         _render_step1()
     elif step == 2:
         _render_step2()
     elif step == 3:
         _render_step3()
+    elif step == 4:
+        _render_step4()
 
 
 if __name__ == "__main__":
