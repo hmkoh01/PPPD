@@ -17,9 +17,7 @@ Step 3 — 차이점 검증 (Human-in-the-loop):
 """
 from __future__ import annotations
 
-import random
 import sys
-import time
 import threading
 from pathlib import Path
 
@@ -28,6 +26,7 @@ sys.path.insert(0, str(ROOT))
 
 import av
 import cv2
+import google.generativeai as genai
 import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
@@ -76,6 +75,17 @@ _BOX_COLOR = {
     "red":    (0, 0, 255),
     "orange": (0, 165, 255),
     "green":  (0, 200, 0),
+}
+
+# WebRTC 공통 미디어 제약
+_WEBRTC_CONSTRAINTS = {
+    "video": {
+        "width":      {"ideal": 1280, "max": 1280},
+        "height":     {"ideal": 720,  "max": 720},
+        "frameRate":  {"ideal": 15,   "max": 20},
+        "facingMode": {"ideal": "environment"},
+    },
+    "audio": False,
 }
 
 
@@ -154,8 +164,8 @@ class VideoProcessor(VideoProcessorBase):
         gray_ref   = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2GRAY)
         blurred    = cv2.GaussianBlur(gray_ref, (13, 13), 0)
         edges      = cv2.Canny(blurred, _EDGE_CANNY_LOW, _EDGE_CANNY_HIGH)
-        kernel     = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        edges      = cv2.dilate(edges, kernel, iterations=3)
+        kernel     = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        edges      = cv2.dilate(edges, kernel, iterations=2)
         scaled_edge = cv2.resize(edges, (fit_w, fit_h), interpolation=cv2.INTER_NEAREST)
         edge_canvas = np.zeros((h, w), dtype=np.uint8)
         edge_canvas[y0:y0 + fit_h, x0:x0 + fit_w] = scaled_edge
@@ -193,10 +203,16 @@ class VideoProcessor(VideoProcessorBase):
                 if mask is not None:
                     edge_px = mask == 255
                     if edge_px.any():
-                        cam_vals = img[edge_px].astype(np.float32)
-                        color    = np.array(_EDGE_COLOR, dtype=np.float32)
-                        blended  = cam_vals * (1 - _EDGE_ALPHA) + color * _EDGE_ALPHA
-                        img[edge_px] = np.clip(blended, 0, 255).astype(np.uint8)
+                        # float 변환 없이 uint8 범위 내 정수 연산으로 최적화
+                        scale         = int((1 - _EDGE_ALPHA) * 256)
+                        add_r         = int(_EDGE_COLOR[0] * _EDGE_ALPHA)
+                        add_g         = int(_EDGE_COLOR[1] * _EDGE_ALPHA)
+                        add_b         = int(_EDGE_COLOR[2] * _EDGE_ALPHA)
+                        vals          = img[edge_px]
+                        img[edge_px]  = np.clip(
+                            (vals * scale >> 8) + [add_r, add_g, add_b],
+                            0, 255,
+                        ).astype(np.uint8)
 
             # 중앙 십자선: 구도 정렬 가이드
             cx, cy = w // 2, h // 2
@@ -218,31 +234,53 @@ class VideoProcessor(VideoProcessorBase):
             return frame
 
 
-# ── VLM 모의 분석 ──────────────────────────────────────────────────────────
+# ── VLM 분석 (Gemini 1.5 Flash) ────────────────────────────────────────────
 
-def mock_vlm_analyze(image: np.ndarray) -> dict:
+_VLM_PROMPT = """당신은 기숙사 퇴사 점검 AI입니다.
+아래 클로즈업 사진을 보고, 해당 부위가 원상복구가 필요한 상태인지 판단해 주세요.
+
+판단 기준:
+- 쓰레기, 이물질, 오염, 낙서, 파손, 비품 분실 또는 추가 물품 등이 있으면 "suspicious"
+- 깨끗하고 정상 상태이면 "clean"
+
+반드시 아래 JSON 형식으로만 응답하세요 (다른 텍스트 없이):
+{"result": "clean" or "suspicious", "reason": "한국어로 간단한 사유"}"""
+
+def vlm_analyze(image: np.ndarray) -> dict:
     """
-    VLM(Vision Language Model) API 호출을 모방하는 함수.
-    실제 서비스에서는 Claude Vision API 등으로 교체합니다.
+    Gemini 1.5 Flash로 클로즈업 이미지를 분석합니다.
 
     Returns
     -------
     dict
         {"result": "clean"|"suspicious", "reason": str}
     """
-    time.sleep(2)   # API 지연 시뮬레이션
-    if random.random() < 0.7:
-        return {
-            "result": "clean",
-            "reason": "이상이 감지되지 않았습니다. 원상태로 보입니다.",
-        }
-    reasons = [
-        "쓰레기 또는 이물질이 바닥에 감지되었습니다.",
-        "가구 또는 비품 파손이 의심됩니다.",
-        "벽면 오염 또는 낙서가 감지되었습니다.",
-        "원상복구가 필요한 추가 비치 물품이 발견됩니다.",
-    ]
-    return {"result": "suspicious", "reason": random.choice(reasons)}
+    api_key = st.secrets.get("GEMINI_API_KEY", "")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY가 .streamlit/secrets.toml에 설정되지 않았습니다.")
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel("gemini-2.5-flash")
+
+    # BGR → RGB → JPEG bytes
+    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    ok, buf = cv2.imencode(".jpg", rgb, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    if not ok:
+        raise RuntimeError("이미지 인코딩 실패")
+
+    image_part = {"mime_type": "image/jpeg", "data": buf.tobytes()}
+    response = model.generate_content([_VLM_PROMPT, image_part])
+
+    import json, re
+    text = response.text.strip()
+    # 마크다운 코드블록 제거
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
+    parsed = json.loads(text)
+
+    result = parsed.get("result", "suspicious")
+    if result not in ("clean", "suspicious"):
+        result = "suspicious"
+    return {"result": result, "reason": parsed.get("reason", "")}
 
 
 # ── 헬퍼 함수 ─────────────────────────────────────────────────────────────
@@ -269,6 +307,84 @@ def decode_bytes(data: bytes) -> np.ndarray | None:
     return cv2.imdecode(buf, cv2.IMREAD_COLOR)
 
 
+# ── 전체화면 카메라 CSS ────────────────────────────────────────────────────
+
+def _fullscreen_camera_css() -> None:
+    """카메라 전체화면 모드일 때 Streamlit 크롬을 숨기고 WebRTC를 뷰포트에 꽉 채웁니다.
+    - secondary 버튼 → 좌상단 반투명 뒤로가기 버튼
+    - primary 버튼   → 하단 중앙 원형 셔터 버튼
+    """
+    st.markdown("""
+<style>
+header[data-testid="stHeader"],
+footer,
+#MainMenu,
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"] { display: none !important; }
+
+section[data-testid="stSidebar"] { display: none !important; }
+
+.main .block-container {
+    padding: 0 !important;
+    max-width: 100vw !important;
+    min-height: 100vh !important;
+}
+
+[data-testid="stCustomComponentV1"] {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    z-index: 100 !important;
+    background: #000 !important;
+}
+[data-testid="stCustomComponentV1"] iframe {
+    width: 100% !important;
+    height: 100% !important;
+    border: none !important;
+    pointer-events: none !important;
+}
+
+/* 뒤로 버튼 — 좌상단 */
+button[kind="secondary"] {
+    position: fixed !important;
+    top: 16px !important;
+    left: 16px !important;
+    z-index: 200 !important;
+    background: rgba(0,0,0,0.55) !important;
+    color: #fff !important;
+    border: 1px solid rgba(255,255,255,0.35) !important;
+    border-radius: 20px !important;
+    padding: 6px 16px !important;
+    font-size: 14px !important;
+    min-height: unset !important;
+    height: auto !important;
+    width: auto !important;
+}
+
+/* 셔터 버튼 — 하단 중앙 원형 */
+button[kind="primary"] {
+    position: fixed !important;
+    bottom: 48px !important;
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+    z-index: 200 !important;
+    width: 72px !important;
+    height: 72px !important;
+    min-height: unset !important;
+    border-radius: 50% !important;
+    padding: 0 !important;
+    font-size: 26px !important;
+    background: rgba(255,255,255,0.92) !important;
+    color: #111 !important;
+    border: 5px solid rgba(255,255,255,0.45) !important;
+    box-shadow: 0 0 0 3px rgba(255,255,255,0.22),
+                0 4px 20px rgba(0,0,0,0.45) !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 # ── 세션 상태 초기화 ───────────────────────────────────────────────────────
 
 def _init_session_state() -> None:
@@ -283,6 +399,12 @@ def _init_session_state() -> None:
         "student_issues":            [],        # [{box_coords, status, closeup_bgr, vlm_reason}]
         "webrtc_key_1":              0,         # Step1 webrtc 리셋용 카운터
         "webrtc_key_2":              0,         # Step2 webrtc 리셋용 카운터
+        "webrtc_key_closeup":        0,         # Step3 클로즈업 webrtc 리셋용 카운터
+        "active_closeup_idx":        None,      # 현재 클로즈업 촬영 중인 이슈 인덱스
+        "active_camera_step":        None,      # 전체화면 카메라 모드 활성 단계 (1, 2, "closeup")
+        "closeup_page":              -1,        # Step3 현재 페이지 (-1=개요, 0~=이슈)
+        "analyzing_closeup":         False,     # VLM 분석 대기 중 플래그
+        "pending_closeup_frame":     None,      # 분석 대기 중인 캡처 프레임
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -301,8 +423,14 @@ def _reset_flow() -> None:
         if k in st.session_state:
             del st.session_state[k]
     # webrtc를 강제 재시작하기 위해 키를 증가시킵니다.
-    st.session_state.webrtc_key_1 = st.session_state.get("webrtc_key_1", 0) + 1
-    st.session_state.webrtc_key_2 = st.session_state.get("webrtc_key_2", 0) + 1
+    st.session_state.webrtc_key_1        = st.session_state.get("webrtc_key_1", 0) + 1
+    st.session_state.webrtc_key_2        = st.session_state.get("webrtc_key_2", 0) + 1
+    st.session_state.webrtc_key_closeup  = st.session_state.get("webrtc_key_closeup", 0) + 1
+    st.session_state.active_closeup_idx  = None
+    st.session_state.active_camera_step  = None
+    st.session_state.closeup_page        = -1
+    st.session_state.analyzing_closeup   = False
+    st.session_state.pending_closeup_frame = None
 
 
 # ── Step 렌더러 ────────────────────────────────────────────────────────────
@@ -347,14 +475,7 @@ def _render_step0() -> None:
 
 
 def _render_step1() -> None:
-    """
-    Step 1: 입사 — 초기 사진 촬영.
-    기준 사진(ref)을 오버레이로 띄워 구도를 맞추고 캡처합니다.
-    """
-    st.subheader("Step 1 / 3  —  📷 입사 초기 사진 촬영")
-    st.caption("기준 사진 오버레이에 카메라를 맞추고 '캡처' 버튼을 눌러 주세요.")
-
-    # ── 호실 확인 (Step 0에서 자동 배정됨) ───────────────────────────
+    """Step 1: 입사 — 초기 사진 촬영."""
     room_id = st.session_state.student_room_id
     if not room_id:
         st.error("호실 정보가 없습니다. 처음부터 다시 시작해 주세요.")
@@ -366,80 +487,74 @@ def _render_step1() -> None:
         st.warning(f"호실 **{room_id}** 에 기준 사진이 등록되지 않았습니다. 관리자에게 문의하세요.")
         return
 
-    st.info(f"배정 호실: **{room_id}** ({st.session_state.student_name_input})")
-
-    # 기준 사진 로드
     ref_bgr = load_image(room.get("ref_image_path"))
     if ref_bgr is None:
         st.error("기준 사진을 불러올 수 없습니다.")
         return
     st.session_state.student_ref_bgr = ref_bgr
 
-    # ── WebRTC 스트림 ────────────────────────────────────────────────
-    ctx = webrtc_streamer(
-        key=f"step1_{st.session_state.webrtc_key_1}",
-        video_processor_factory=VideoProcessor,
-        rtc_configuration=RTC_CONFIGURATION,
-        media_stream_constraints={
-            "video": {
-                "width":      {"ideal": 1280},
-                "height":     {"ideal": 720},
-                "frameRate":  {"ideal": 30},
-                "facingMode": {"ideal": "environment"},
-            },
-            "audio": False,
-        },
-        async_processing=True,
-    )
+    # ── 전체화면 카메라 모드 ──────────────────────────────────────────
+    if st.session_state.get("active_camera_step") == 1:
+        _fullscreen_camera_css()
 
-    # VideoProcessor에 기준 이미지 주입
-    # (매 Streamlit 리렌더링마다 호출되지만, lock 내부에서 빠르게 처리됨)
-    if ctx.video_processor is not None:
-        ctx.video_processor.set_reference(ref_bgr)
+        ctx = webrtc_streamer(
+            key=f"step1_{st.session_state.webrtc_key_1}",
+            video_processor_factory=VideoProcessor,
+            rtc_configuration=RTC_CONFIGURATION,
+            media_stream_constraints=_WEBRTC_CONSTRAINTS,
+            desired_playing_state=True,
+            async_processing=True,
+        )
+        if ctx.video_processor is not None:
+            ctx.video_processor.set_reference(ref_bgr)
 
-        if ctx.video_processor.is_aligned:
-            st.success("✅ 구도 일치 — 지금 캡처해 주세요!")
-        else:
-            st.info("🎯 오버레이에 카메라를 맞춰 주세요.")
+        # 뒤로 버튼 (secondary → 좌상단)
+        if st.button("← 뒤로", key="step1_cam_back"):
+            st.session_state.active_camera_step = None
+            st.session_state.webrtc_key_1 += 1
+            st.rerun()
 
-    # ── 캡처 버튼 ────────────────────────────────────────────────────
-    if st.button("📸 초기 사진 캡처", use_container_width=True, type="primary"):
-        proc = ctx.video_processor if ctx else None
-        frame = proc.latest_frame if proc else None
-        if frame is None:
-            st.error("카메라가 아직 준비되지 않았습니다. 스트림이 시작된 후 다시 눌러 주세요.")
-            return
+        # 셔터 버튼 (primary → 하단 원형)
+        if st.button("📷", key="step1_capture", type="primary"):
+            proc  = ctx.video_processor if ctx else None
+            frame = proc.latest_frame if proc else None
+            if frame is None:
+                st.error("카메라가 아직 준비되지 않았습니다.")
+                return
+            path = save_image_ndarray(room_id, "initial", frame)
+            update_room(room_id, initial_image_path=path, status="checked_in")
+            st.session_state.student_initial_bgr = frame
+            st.session_state.student_step        = 2
+            st.session_state.webrtc_key_1       += 1
+            st.session_state.active_camera_step  = None
+            st.rerun()
+        return
 
-        # 이미지를 디스크에 저장하고 DB를 업데이트합니다.
-        path = save_image_ndarray(room_id, "initial", frame)
-        update_room(room_id, initial_image_path=path, status="checked_in")
+    # ── 일반 모드 ─────────────────────────────────────────────────────
+    st.subheader("Step 1 / 3  —  📷 입사 초기 사진 촬영")
+    st.caption("기준 사진 오버레이에 카메라를 맞추고 촬영해 주세요.")
+    st.info(f"배정 호실: **{room_id}** ({st.session_state.student_name_input})")
 
-        # 세션에 ndarray도 보관 (Step 2 오버레이 가이드로 사용)
-        st.session_state.student_initial_bgr = frame
-        st.session_state.student_step        = 2
-        # webrtc_key를 증가시켜 Step1 스트림이 더 이상 사용되지 않도록 합니다.
-        st.session_state.webrtc_key_1       += 1
-        st.rerun()
-
-    # 기준 사진 미리보기
     with st.expander("📌 기준 사진 보기"):
         st.image(bgr_to_rgb(ref_bgr), use_container_width=True)
 
+    col_back, col_start = st.columns(2)
+    with col_back:
+        if st.button("← 인증으로", use_container_width=True):
+            st.session_state.student_step = 0
+            st.rerun()
+    with col_start:
+        if st.button("📷 촬영 시작", use_container_width=True, type="primary"):
+            st.session_state.active_camera_step = 1
+            st.rerun()
+
 
 def _render_step2() -> None:
-    """
-    Step 2: 퇴사 — 최종 사진 촬영.
-    Step 1에서 찍은 초기 사진을 오버레이 가이드로 삼아 최종 사진을 촬영합니다.
-    캡처 직후 스트림을 종료하고 align + detect_difference를 1회 실행합니다.
-    """
-    st.subheader("Step 2 / 3  —  🚪 퇴사 최종 사진 촬영")
-    st.caption("입사 때 찍은 초기 사진 오버레이에 맞춰 촬영하세요.")
-
+    """Step 2: 퇴사 — 최종 사진 촬영."""
     room_id     = st.session_state.student_room_id
     initial_bgr = st.session_state.student_initial_bgr
 
     if initial_bgr is None:
-        # 세션에 없으면 DB에서 다시 로드 (새로고침 대비)
         from utils.db_utils import get_room
         room = get_room(room_id)
         if room:
@@ -448,192 +563,279 @@ def _render_step2() -> None:
 
     if initial_bgr is None:
         st.error("초기 사진을 불러올 수 없습니다. Step 1부터 다시 진행해 주세요.")
-        if st.button("↩️ Step 1로 돌아가기"):
+        if st.button("← Step 1로", use_container_width=True):
             st.session_state.student_step = 1
             st.rerun()
         return
 
-    # ── WebRTC 스트림 ────────────────────────────────────────────────
-    ctx = webrtc_streamer(
-        key=f"step2_{st.session_state.webrtc_key_2}",
-        video_processor_factory=VideoProcessor,
-        rtc_configuration=RTC_CONFIGURATION,
-        media_stream_constraints={
-            "video": {
-                "width":      {"ideal": 1280},
-                "height":     {"ideal": 720},
-                "frameRate":  {"ideal": 30},
-                "facingMode": {"ideal": "environment"},
-            },
-            "audio": False,
-        },
-        async_processing=True,
-    )
+    # ── 전체화면 카메라 모드 ──────────────────────────────────────────
+    if st.session_state.get("active_camera_step") == 2:
+        _fullscreen_camera_css()
 
-    if ctx.video_processor is not None:
-        # 이번엔 초기 사진이 오버레이 가이드입니다.
-        ctx.video_processor.set_reference(initial_bgr)
+        ctx = webrtc_streamer(
+            key=f"step2_{st.session_state.webrtc_key_2}",
+            video_processor_factory=VideoProcessor,
+            rtc_configuration=RTC_CONFIGURATION,
+            media_stream_constraints=_WEBRTC_CONSTRAINTS,
+            desired_playing_state=True,
+            async_processing=True,
+        )
+        if ctx.video_processor is not None:
+            ctx.video_processor.set_reference(initial_bgr)
 
-        if ctx.video_processor.is_aligned:
-            st.success("✅ 구도 일치 — 지금 캡처해 주세요!")
-        else:
-            st.info("🎯 초기 사진 오버레이에 카메라를 맞춰 주세요.")
+        # 뒤로 버튼 (secondary → 좌상단)
+        if st.button("← 뒤로", key="step2_cam_back"):
+            st.session_state.active_camera_step = None
+            st.session_state.webrtc_key_2 += 1
+            st.rerun()
 
-    # ── 캡처 버튼 ────────────────────────────────────────────────────
-    if st.button("📸 최종 사진 캡처", use_container_width=True, type="primary"):
-        proc  = ctx.video_processor if ctx else None
-        frame = proc.latest_frame if proc else None
-        if frame is None:
-            st.error("카메라가 아직 준비되지 않았습니다.")
-            return
-
-        # webrtc_key 증가 → 다음 rerun에서 Step2 스트림이 렌더링되지 않음 (자동 종료)
-        st.session_state.webrtc_key_2 += 1
-
-        # ── 정합 + 차이 검출 (1회, 스피너 표시) ──────────────────────
-        with st.spinner("🔍 AI가 차이점을 분석 중입니다…"):
-            try:
-                aligned = align_images(initial_bgr, frame)
-                boxes   = detect_difference(initial_bgr, aligned)
-            except ImageAlignmentError as e:
-                st.error(f"정합 실패: {e}\n\nStep 1부터 다시 진행해 주세요.")
-                return
-            except Exception as e:
-                st.error(f"분석 오류: {e}")
+        # 셔터 버튼 (primary → 하단 원형)
+        if st.button("📷", key="step2_capture", type="primary"):
+            proc  = ctx.video_processor if ctx else None
+            frame = proc.latest_frame if proc else None
+            if frame is None:
+                st.error("카메라가 아직 준비되지 않았습니다.")
                 return
 
-        # 정합된 최종 이미지와 이슈 목록을 세션에 저장
-        st.session_state.student_final_aligned_bgr = aligned
-        st.session_state.student_issues = [
-            {
-                "box_coords":  list(b),
-                "status":      "red",     # 초기값: 미검증 (붉은색)
-                "closeup_bgr": None,
-                "vlm_reason":  None,
-            }
-            for b in boxes
-        ]
+            st.session_state.webrtc_key_2       += 1
+            st.session_state.active_camera_step  = None
 
-        # DB에 최종 사진 저장 (정합된 버전)
-        path = save_image_ndarray(room_id, "final", aligned)
-        update_room(room_id, final_image_path=path)
+            with st.spinner("🔍 AI가 차이점을 분석 중입니다…"):
+                try:
+                    aligned = align_images(initial_bgr, frame)
+                    boxes   = detect_difference(initial_bgr, aligned)
+                except ImageAlignmentError as e:
+                    st.error(f"정합 실패: {e}\n\nStep 1부터 다시 진행해 주세요.")
+                    return
+                except Exception as e:
+                    st.error(f"분석 오류: {e}")
+                    return
 
-        st.session_state.student_step = 3
-        st.rerun()
+            st.session_state.student_final_aligned_bgr = aligned
+            st.session_state.student_issues = [
+                {"box_coords": list(b), "status": "red", "closeup_bgr": None, "vlm_reason": None}
+                for b in boxes
+            ]
+            st.session_state.closeup_page = -1   # 개요 화면부터 시작
+            path = save_image_ndarray(room_id, "final", aligned)
+            update_room(room_id, final_image_path=path)
+            st.session_state.student_step = 3
+            st.rerun()
+        return
 
-    # 초기 사진 미리보기
+    # ── 일반 모드 ─────────────────────────────────────────────────────
+    st.subheader("Step 2 / 3  —  🚪 퇴사 최종 사진 촬영")
+    st.caption("입사 때 찍은 초기 사진 오버레이에 맞춰 촬영하세요.")
+
     with st.expander("📌 초기 사진 (가이드) 보기"):
         st.image(bgr_to_rgb(initial_bgr), use_container_width=True)
 
+    col_back, col_start = st.columns(2)
+    with col_back:
+        if st.button("← Step 1로", use_container_width=True):
+            st.session_state.student_step        = 1
+            st.session_state.student_initial_bgr = None
+            st.session_state.webrtc_key_1       += 1
+            st.rerun()
+    with col_start:
+        if st.button("📷 촬영 시작", use_container_width=True, type="primary"):
+            st.session_state.active_camera_step = 2
+            st.rerun()
+
 
 def _render_step3() -> None:
-    """
-    Step 3: 차이점 검증 (Human-in-the-loop).
-
-    - 최종 사진에 붉은 박스를 표시합니다.
-    - 각 박스에 대해 클로즈업 촬영 → VLM 모의 분석 → 색상 업데이트를 진행합니다.
-    - 모든 이슈가 초록/주황으로 해소되면 최종 제출 버튼이 활성화됩니다.
-    """
-    st.subheader("Step 3 / 3  —  🔍 차이점 검증 및 제출")
-
-    room_id     = st.session_state.student_room_id
-    final_img   = st.session_state.student_final_aligned_bgr
-    issues      = st.session_state.student_issues
+    """Step 3: 차이점 검증 — 이슈 1개씩 페이지 단위로 클로즈업 촬영 및 VLM 분석."""
+    room_id   = st.session_state.student_room_id
+    final_img = st.session_state.student_final_aligned_bgr
+    issues    = st.session_state.student_issues
 
     if final_img is None:
         st.error("최종 사진이 없습니다. Step 2부터 다시 진행해 주세요.")
         return
 
-    # ── 상단: 주석 달린 최종 사진 ────────────────────────────────────
-    annotated = draw_issues(final_img, issues)
-    st.image(bgr_to_rgb(annotated), caption="최종 사진 (박스 색상: 🔴미검증 / 🟢이상없음 / 🟠의심)", use_container_width=True)
+    # ── VLM 분석 대기 화면 ───────────────────────────────────────────
+    if st.session_state.get("analyzing_closeup"):
+        active_idx = st.session_state.get("active_closeup_idx", 0)
+        frame      = st.session_state.get("pending_closeup_frame")
 
-    if not issues:
-        st.success("AI가 차이를 감지하지 못했습니다. 바로 제출할 수 있습니다.")
-    else:
-        st.markdown(f"**{len(issues)}곳의 차이 영역이 감지되었습니다.** 각 항목을 클로즈업 촬영해 주세요.")
+        st.subheader("🤖 AI 분석 중…")
+        st.caption(f"영역 #{active_idx + 1} 클로즈업 사진을 분석하고 있습니다. 잠시만 기다려 주세요.")
+        with st.spinner(""):
+            try:
+                result = vlm_analyze(frame)
+            except Exception as e:
+                st.error(f"AI 분석 오류: {e}")
+                result = None
 
-    st.divider()
+        st.session_state.analyzing_closeup       = False
+        st.session_state.pending_closeup_frame   = None
 
-    # ── 크롭 갤러리 + 클로즈업 촬영 + VLM 분석 ───────────────────────
-    # 이슈를 한 행에 최대 3개씩 갤러리 형태로 배치합니다.
-    for i in range(0, len(issues), 3):
-        cols = st.columns(min(3, len(issues) - i))
-        for j, col in enumerate(cols):
-            idx   = i + j
-            issue = issues[idx]
+        if result is not None:
+            new_status = "green" if result["result"] == "clean" else "orange"
+            st.session_state.student_issues[active_idx]["status"]      = new_status
+            st.session_state.student_issues[active_idx]["vlm_reason"]  = result["reason"]
+            st.session_state.student_issues[active_idx]["closeup_bgr"] = frame
+        st.rerun()
+        return
 
-            status_emoji = {"red": "🔴", "orange": "🟠", "green": "🟢"}.get(
-                issue["status"], "🔴"
-            )
-            col.markdown(f"**#{idx + 1} {status_emoji}**")
+    # ── WebRTC 클로즈업 촬영 모드 ────────────────────────────────────
+    if st.session_state.get("active_camera_step") == "closeup":
+        active_idx = st.session_state.get("active_closeup_idx", 0)
+        _fullscreen_camera_css()
 
-            # 박스 크롭 썸네일
-            x, y, bw, bh = issue["box_coords"]
+        # 크롭 이미지를 오버레이 기준으로 사용
+        crop_ref = None
+        if active_idx < len(issues):
+            x, y, bw, bh = issues[active_idx]["box_coords"]
             crop = final_img[y : y + bh, x : x + bw]
             if crop.size > 0:
-                col.image(bgr_to_rgb(crop), caption=f"크롭 #{idx + 1}", use_container_width=True)
+                crop_ref = crop
 
-            # VLM 사유 표시 (이미 분석된 경우)
-            if issue["vlm_reason"]:
-                col.caption(f"🤖 {issue['vlm_reason']}")
-                # 주황(의심) 결과인 경우 — 자율 조치 기회 제공
-                if issue["status"] == "orange":
-                    col.warning("먼지나 쓰레기가 감지되었습니다. 직접 청소 후 다시 촬영하시겠습니까?")
-                    if col.button("🔄 다시 촬영하기", key=f"retake_btn_{idx}"):
-                        st.session_state.student_issues[idx]["status"]      = "red"
-                        st.session_state.student_issues[idx]["vlm_reason"]  = None
-                        st.session_state.student_issues[idx]["closeup_bgr"] = None
-                        st.session_state[f"show_closeup_{idx}"] = False
-                        st.rerun()
-                continue   # 이미 처리된 항목은 아래 버튼 생략
+        ctx = webrtc_streamer(
+            key=f"closeup_{st.session_state.webrtc_key_closeup}",
+            video_processor_factory=VideoProcessor,
+            rtc_configuration=RTC_CONFIGURATION,
+            media_stream_constraints=_WEBRTC_CONSTRAINTS,
+            desired_playing_state=True,
+            async_processing=True,
+        )
+        if ctx.video_processor is not None and crop_ref is not None:
+            ctx.video_processor.set_reference(crop_ref)
 
-            # 클로즈업 촬영 버튼 → camera_input 열기
-            if col.button(f"🔍 클로즈업 촬영", key=f"closeup_btn_{idx}"):
-                st.session_state[f"show_closeup_{idx}"] = True
+        if st.button("← 뒤로", key="closeup_cam_back"):
+            st.session_state.active_camera_step  = None
+            st.session_state.webrtc_key_closeup += 1
+            st.rerun()
 
-            # st.camera_input은 상태 플래그로 표시 여부를 제어합니다.
-            if st.session_state.get(f"show_closeup_{idx}"):
-                closeup_file = col.camera_input(
-                    f"#{idx + 1} 부위를 가까이서 찍어 주세요",
-                    key=f"closeup_cam_{idx}",
-                )
-                if closeup_file is not None:
-                    closeup_bgr = decode_bytes(closeup_file.getvalue())
-                    if closeup_bgr is not None:
-                        # VLM 분석 실행 (스피너 표시)
-                        with col:
-                            with st.spinner("🤖 AI 분석 중…"):
-                                result = mock_vlm_analyze(closeup_bgr)
+        if st.button("📷", key="closeup_capture", type="primary"):
+            proc  = ctx.video_processor if ctx else None
+            frame = proc.latest_frame if proc else None
+            if frame is None:
+                st.error("카메라가 아직 준비되지 않았습니다.")
+            else:
+                st.session_state.pending_closeup_frame = frame
+                st.session_state.analyzing_closeup     = True
+                st.session_state.active_camera_step    = None
+                st.session_state.webrtc_key_closeup   += 1
+                st.rerun()
+        return
 
-                        # 결과에 따라 이슈 상태 업데이트
-                        new_status = "green" if result["result"] == "clean" else "orange"
-                        st.session_state.student_issues[idx]["status"]      = new_status
-                        st.session_state.student_issues[idx]["vlm_reason"]  = result["reason"]
-                        st.session_state.student_issues[idx]["closeup_bgr"] = closeup_bgr
-                        st.session_state[f"show_closeup_{idx}"] = False
-                        st.rerun()
+    # ── 이슈 없음 → 바로 제출 ────────────────────────────────────────
+    if not issues:
+        st.subheader("Step 3 / 3  —  🔍 차이점 검증")
+        st.success("AI가 차이를 감지하지 못했습니다. 바로 제출할 수 있습니다.")
+        col_b, col_s = st.columns(2)
+        with col_b:
+            if st.button("← Step 2로", use_container_width=True):
+                st.session_state.student_step              = 2
+                st.session_state.student_final_aligned_bgr = None
+                st.session_state.student_issues            = []
+                st.session_state.webrtc_key_2             += 1
+                st.rerun()
+        with col_s:
+            if st.button("✅ 최종 제출", use_container_width=True, type="primary"):
+                _submit_to_admin(room_id, issues)
+        return
+
+    # ── 개요 화면 (closeup_page == -1) ───────────────────────────────
+    page = st.session_state.get("closeup_page", -1)
+
+    if page == -1:
+        st.subheader("Step 3 / 3  —  🔍 차이점 검증")
+
+        annotated = draw_issues(final_img, issues)
+        st.image(bgr_to_rgb(annotated),
+                 caption="최종 사진 — 🔴 미검증 / 🟢 이상없음 / 🟠 의심",
+                 use_container_width=True)
+
+        st.markdown(f"**{len(issues)}곳의 차이 영역이 감지되었습니다.**")
+
+        # 이슈 목록 표
+        _STATUS_LABEL = {"red": "🔴 미검증", "orange": "🟠 의심", "green": "🟢 이상없음"}
+        for idx, iss in enumerate(issues):
+            label  = _STATUS_LABEL.get(iss["status"], "🔴 미검증")
+            reason = f" — {iss['vlm_reason']}" if iss.get("vlm_reason") else ""
+            st.markdown(f"- **영역 #{idx + 1}**  {label}{reason}")
+
+        st.divider()
+
+        col_b, col_s = st.columns(2)
+        with col_b:
+            if st.button("← Step 2로", use_container_width=True):
+                st.session_state.student_step              = 2
+                st.session_state.student_final_aligned_bgr = None
+                st.session_state.student_issues            = []
+                st.session_state.webrtc_key_2             += 1
+                st.rerun()
+        with col_s:
+            all_resolved = all(iss["status"] in ("green", "orange") for iss in issues)
+            if all_resolved:
+                if st.button("✅ 최종 제출", use_container_width=True, type="primary"):
+                    _submit_to_admin(room_id, issues)
+            else:
+                if st.button("📷 클로즈업 촬영 시작", use_container_width=True, type="primary"):
+                    st.session_state.closeup_page = 0
+                    st.rerun()
+        return
+
+    # ── 페이지 단위 이슈 검증 ─────────────────────────────────────────
+    page = max(0, min(page, len(issues) - 1))
+    issue = issues[page]
+
+    status_emoji = {"red": "🔴", "orange": "🟠", "green": "🟢"}.get(issue["status"], "🔴")
+
+    st.subheader(f"Step 3 / 3  —  🔍 영역 검증")
+    st.progress((page + 1) / len(issues), text=f"{page + 1} / {len(issues)} 영역")
+
+    st.markdown(f"### 영역 #{page + 1}  {status_emoji}")
+
+    # 크롭 썸네일
+    x, y, bw, bh = issue["box_coords"]
+    crop = final_img[y : y + bh, x : x + bw]
+    if crop.size > 0:
+        st.image(bgr_to_rgb(crop), use_container_width=True)
+
+    # VLM 결과 표시
+    if issue["vlm_reason"]:
+        st.info(f"🤖 {issue['vlm_reason']}")
+        if issue["status"] == "orange":
+            st.warning("의심 영역이 감지되었습니다. 청소 후 다시 촬영할 수 있습니다.")
+            if st.button("🔄 다시 촬영하기", key=f"retake_{page}", use_container_width=True):
+                st.session_state.student_issues[page]["status"]      = "red"
+                st.session_state.student_issues[page]["vlm_reason"]  = None
+                st.session_state.student_issues[page]["closeup_bgr"] = None
+                st.rerun()
+    else:
+        # 미검증 → 클로즈업 촬영 버튼
+        if st.button("📷 클로즈업 촬영 시작", use_container_width=True, type="primary",
+                     key=f"start_closeup_{page}"):
+            st.session_state.active_closeup_idx  = page
+            st.session_state.active_camera_step  = "closeup"
+            st.rerun()
 
     st.divider()
 
-    # ── 최종 제출 버튼 ────────────────────────────────────────────────
-    # 모든 이슈가 초록(green) 또는 주황(orange)으로 해소되어야 활성화됩니다.
-    all_resolved = all(
-        iss["status"] in ("green", "orange")
-        for iss in issues
-    ) if issues else True
+    # ── 페이지 내비게이션 ─────────────────────────────────────────────
+    col_prev, col_next = st.columns(2)
+    with col_prev:
+        label = "← 목록으로" if page == 0 else "← 이전 영역"
+        if st.button(label, use_container_width=True):
+            st.session_state.closeup_page = -1 if page == 0 else page - 1
+            st.rerun()
 
-    if not all_resolved:
-        remaining = sum(1 for iss in issues if iss["status"] == "red")
-        st.warning(f"아직 클로즈업 촬영이 필요한 항목이 {remaining}건 남아 있습니다.")
-
-    if st.button(
-        "✅ 최종 점검 제출",
-        disabled=not all_resolved,
-        use_container_width=True,
-        type="primary",
-    ):
-        _submit_to_admin(room_id, issues)
+    with col_next:
+        if page < len(issues) - 1:
+            if st.button("다음 영역 →", use_container_width=True):
+                st.session_state.closeup_page = page + 1
+                st.rerun()
+        else:
+            all_resolved = all(iss["status"] in ("green", "orange") for iss in issues)
+            if st.button("✅ 최종 제출", use_container_width=True, type="primary",
+                         disabled=not all_resolved):
+                _submit_to_admin(room_id, issues)
+            if not all_resolved:
+                remaining = sum(1 for iss in issues if iss["status"] == "red")
+                st.caption(f"촬영 미완료 영역 {remaining}건 남음")
 
 
 def _submit_to_admin(room_id: str, issues: list[dict]) -> None:

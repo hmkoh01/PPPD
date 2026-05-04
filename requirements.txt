@@ -5,3 +5,4 @@ numpy>=1.24
 streamlit-webrtc>=0.47
 av>=10.0
 aiortc>=1.6
+google-generativeai>=0.7
