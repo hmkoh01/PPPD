@@ -19,3 +19,5 @@ ngrok.yml
 # OS
 .DS_Store
 Thumbs.db
+# Streamlit 시크릿 (API 키 등 민감 정보)
+.streamlit/secrets.toml
