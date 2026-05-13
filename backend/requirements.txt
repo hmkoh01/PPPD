@@ -1,0 +1,29 @@
+# FastAPI 백엔드 의존성
+# 설치: pip install -r requirements.txt
+
+# Web framework
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+
+# Request body / multipart (파일 업로드에 필수)
+python-multipart>=0.0.9
+
+# ORM & DB
+sqlalchemy>=2.0.0
+
+# 데이터 검증
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# 환경변수
+python-dotenv>=1.0.0
+
+# CV (Phase 3 — storage_service 구현으로 활성화)
+opencv-python-headless>=4.8
+numpy>=1.24
+
+# CV 차이 검출 (Phase 4)
+scikit-image>=0.22
+
+# VLM (Phase 5)
+google-genai>=0.8
