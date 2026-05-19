@@ -128,11 +128,11 @@ export default function AdminReviewsPage() {
 
   return (
     <AdminShell>
-      <div className="space-y-4">
-        <h1 className="text-xl font-bold text-gray-900">점검 리뷰</h1>
+      <div className="space-y-5">
+        <h1 className="text-3xl font-extrabold text-gray-950">점검 리뷰</h1>
 
         {/* 필터 탭 */}
-        <div className="flex gap-2 flex-wrap">
+        <div className="flex flex-wrap gap-2 rounded-[24px] bg-white p-2 ring-1 ring-gray-100">
           {STATUS_FILTERS.map((f) => (
             <button
               key={f.value}
@@ -143,9 +143,9 @@ export default function AdminReviewsPage() {
                 setActionSuccess(null);
               }}
               className={[
-                "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors",
+                "rounded-2xl px-4 py-2 text-xs font-semibold transition-colors",
                 filter === f.value
-                  ? "bg-indigo-600 text-white"
+                  ? "bg-blue-600 text-white"
                   : "bg-gray-100 text-gray-600 hover:bg-gray-200",
               ].join(" ")}
             >
@@ -156,7 +156,7 @@ export default function AdminReviewsPage() {
 
         {/* 에러 */}
         {listError && (
-          <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
+          <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-red-100">
             {listError}
             <button
               className="ml-2 underline"
@@ -169,7 +169,7 @@ export default function AdminReviewsPage() {
 
         {/* 성공 메시지 */}
         {actionSuccess && (
-          <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-sm text-green-700">
+          <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700 ring-1 ring-emerald-100">
             {actionSuccess}
           </div>
         )}
@@ -182,7 +182,7 @@ export default function AdminReviewsPage() {
                 {[...Array(4)].map((_, i) => (
                   <div
                     key={i}
-                    className="h-16 bg-gray-100 rounded-xl animate-pulse"
+                    className="h-16 animate-pulse rounded-[20px] bg-white ring-1 ring-gray-100"
                   />
                 ))}
               </div>
@@ -198,7 +198,7 @@ export default function AdminReviewsPage() {
 
           {/* 상세 패널 (md 이상) */}
           {(selectedId || detailLoading) && (
-            <div className="hidden md:block w-80 flex-shrink-0 bg-white border border-gray-100 rounded-2xl p-4 max-h-screen overflow-y-auto sticky top-4">
+            <div className="sticky top-4 hidden max-h-screen w-96 flex-shrink-0 overflow-y-auto rounded-[24px] bg-white p-5 ring-1 ring-gray-100 md:block">
               {detailLoading ? (
                 <div className="space-y-3">
                   {[...Array(4)].map((_, i) => (
@@ -228,7 +228,7 @@ export default function AdminReviewsPage() {
 
         {/* 모바일: 선택된 점검 상세 (별도 섹션) */}
         {detail && !detailLoading && (
-          <div className="md:hidden bg-white border border-gray-100 rounded-2xl p-4">
+          <div className="rounded-[24px] bg-white p-5 ring-1 ring-gray-100 md:hidden">
             <InspectionDetail
               inspection={detail}
               room={detailRoom}
@@ -260,11 +260,11 @@ export default function AdminReviewsPage() {
             onChange={(e) => setRejectFeedback(e.target.value)}
             placeholder="예) 화장실 청결 상태가 기준에 미달합니다. 재점검 후 제출해 주세요."
             rows={4}
-            className="w-full px-3 py-2 rounded-xl border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-red-400 resize-none"
+            className="w-full resize-none rounded-2xl bg-gray-50 px-4 py-3 text-sm ring-1 ring-gray-100 focus:outline-none focus:ring-2 focus:ring-red-400"
             disabled={actionLoading}
           />
           {actionError && (
-            <div className="bg-red-50 border border-red-200 rounded-xl px-3 py-2 text-xs text-red-700">
+            <div className="rounded-2xl bg-red-50 px-3 py-2 text-xs text-red-700 ring-1 ring-red-100">
               {actionError}
             </div>
           )}

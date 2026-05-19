@@ -14,9 +14,27 @@ import type {
   StudentVerifyResponse,
 } from "./types";
 
-const BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ||
-  "http://localhost:8000";
+const configuredBaseUrl =
+  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
+
+function isLocalhostUrl(url: string): boolean {
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(url);
+}
+
+function shouldUseSameOrigin(baseUrl: string): boolean {
+  if (!baseUrl) return true;
+  if (typeof window === "undefined") return false;
+  if (!isLocalhostUrl(baseUrl)) return false;
+
+  const host = window.location.hostname;
+  return host !== "localhost" && host !== "127.0.0.1";
+}
+
+function apiUrl(path: string): string {
+  return shouldUseSameOrigin(configuredBaseUrl)
+    ? path
+    : `${configuredBaseUrl}${path}`;
+}
 
 // ── 기본 fetch 래퍼 ────────────────────────────────────────
 
@@ -24,7 +42,7 @@ export async function apiFetch<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const url = `${BASE_URL}${path}`;
+  const url = apiUrl(path);
 
   // FormData 를 보낼 때는 Content-Type 을 수동으로 지정하지 않는다
   // (브라우저가 boundary 포함한 multipart/form-data 를 자동으로 설정)

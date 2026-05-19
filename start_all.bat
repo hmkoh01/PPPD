@@ -44,11 +44,8 @@ if not exist "%FRONTEND_DIR%\node_modules" (
     )
 )
 
-REM --- Ask about ngrok ----------------------------------------------------------
-echo Run ngrok tunnels as well?  (Y = yes, N = local only)
-echo.
-set /p NGROK=  Choice (Y/N):
-echo.
+REM --- Always run ngrok ---------------------------------------------------------
+set "NGROK=Y"
 
 REM --- Kill existing processes --------------------------------------------------
 echo Cleaning up ports 8000 and 3000...
@@ -58,7 +55,7 @@ for /f "tokens=5" %%p in ('netstat -ano 2^>nul ^| findstr ":8000 " ^| findstr "L
 for /f "tokens=5" %%p in ('netstat -ano 2^>nul ^| findstr ":3000 " ^| findstr "LISTENING"') do (
     taskkill /pid %%p /f >nul 2>&1
 )
-if /i "%NGROK%"=="Y" taskkill /f /im ngrok.exe >nul 2>&1
+taskkill /f /im ngrok.exe >nul 2>&1
 timeout /t 1 /nobreak > nul
 
 REM --- Write runner scripts -----------------------------------------------------
@@ -88,19 +85,17 @@ timeout /t 3 /nobreak > nul
 echo Starting Frontend (Next.js  port 3000^)...
 start "Frontend - Next.js :3000"  cmd /k "%FRONTEND_RUN%"
 
-REM --- Launch ngrok (optional) --------------------------------------------------
-if /i "%NGROK%"=="Y" (
-    timeout /t 2 /nobreak > nul
-    echo Starting ngrok tunnels...
-    start "ngrok Tunnels" cmd /k "ngrok start --config ""%LOCALAPPDATA%\ngrok\ngrok.yml"" --config ""%ROOT%ngrok.yml"" frontend backend"
-)
+REM --- Launch ngrok -------------------------------------------------------------
+timeout /t 2 /nobreak > nul
+echo Starting ngrok tunnels...
+start "ngrok Tunnels" cmd /k "ngrok start --config ""%LOCALAPPDATA%\ngrok\ngrok.yml"" --config ""%ROOT%ngrok.yml"" frontend backend"
 
 echo.
 echo =====================================================
 echo  Backend  (FastAPI) : http://localhost:8000
 echo  API Docs (Swagger) : http://localhost:8000/docs
 echo  Frontend (Next.js) : http://localhost:3000
-if /i "%NGROK%"=="Y" echo  ngrok dashboard  : http://localhost:4040
+echo  ngrok dashboard  : http://localhost:4040
 echo.
 echo  Close each server window to stop that server.
 echo =====================================================

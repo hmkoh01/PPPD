@@ -10,13 +10,40 @@
   box-sizing: border-box;
 }
 
-body {
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
+html {
+  background: #f7f8fa;
 }
 
-/* 모바일 tap highlight 제거 */
+body {
+  font-family: var(--font-sans);
+  background: #f7f8fa;
+  color: #111827;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overscroll-behavior-y: none;
+}
+
+input,
+textarea,
+button {
+  font: inherit;
+}
+
+::selection {
+  background: #dbeafe;
+  color: #1e3a8a;
+}
+
 a,
 button {
   -webkit-tap-highlight-color: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }

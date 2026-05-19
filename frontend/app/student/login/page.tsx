@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import { StudentShell } from "@/components/student/StudentShell";
+import { StudentStepper } from "@/components/student/StudentStepper";
 import { verifyStudent } from "@/lib/api";
 import { setDormitorySession, statusToPath } from "@/lib/session";
 import type { DormitorySession } from "@/lib/types";
@@ -64,16 +65,18 @@ export default function StudentLoginPage() {
   };
 
   return (
-    <StudentShell title="학생 인증" back={{ label: "처음으로", href: "/student" }}>
-      <div className="py-4">
-        <div className="mb-6">
-          <h2 className="text-lg font-bold text-gray-900">배정 호실 확인</h2>
-          <p className="text-sm text-gray-500 mt-1">
+    <StudentShell title="학생 인증" back={{ label: "처음으로", href: "/" }}>
+      <StudentStepper currentStep={1} />
+
+      <div className="flex min-h-[calc(100dvh-12rem)] flex-col py-2">
+        <div className="mb-8">
+          <h2 className="text-3xl font-extrabold text-gray-950">배정 호실 확인</h2>
+          <p className="mt-2 text-sm leading-relaxed text-gray-500">
             관리자에게 등록된 학번과 이름을 입력하세요.
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="flex flex-1 flex-col space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
               학번
@@ -82,8 +85,8 @@ export default function StudentLoginPage() {
               type="text"
               value={studentNumber}
               onChange={(e) => setStudentNumber(e.target.value)}
-              placeholder="예) 2024123456"
-              className="w-full px-4 py-3 rounded-xl border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              placeholder="예) 20240000"
+              className="h-14 w-full rounded-2xl bg-white px-4 text-base ring-1 ring-gray-100 transition focus:outline-none focus:ring-2 focus:ring-blue-500"
               disabled={loading}
               autoComplete="off"
               inputMode="numeric"
@@ -99,27 +102,29 @@ export default function StudentLoginPage() {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="예) 홍길동"
-              className="w-full px-4 py-3 rounded-xl border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+              className="h-14 w-full rounded-2xl bg-white px-4 text-base ring-1 ring-gray-100 transition focus:outline-none focus:ring-2 focus:ring-blue-500"
               disabled={loading}
               autoComplete="off"
             />
           </div>
 
           {error && (
-            <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
+            <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-red-100">
               {error}
             </div>
           )}
 
-          <Button
-            type="submit"
-            variant="primary"
-            size="lg"
-            fullWidth
-            disabled={loading}
-          >
-            {loading ? "확인 중…" : "시작하기"}
-          </Button>
+          <div className="mt-auto pt-4">
+            <Button
+              type="submit"
+              variant="primary"
+              size="lg"
+              fullWidth
+              disabled={loading}
+            >
+              {loading ? "확인 중…" : "시작하기"}
+            </Button>
+          </div>
         </form>
 
         <p className="mt-4 text-xs text-gray-400 text-center">

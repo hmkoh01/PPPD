@@ -1,8 +1,25 @@
 import type { NextConfig } from "next";
 
+const backendUrl = process.env.BACKEND_URL || "http://localhost:8000";
+
 const nextConfig: NextConfig = {
-  // Phase 8+: 이미지 최적화를 위해 backend 도메인 추가 가능
-  // images: { remotePatterns: [{ hostname: "localhost" }] },
+  devIndicators: false,
+  async rewrites() {
+    return [
+      {
+        source: "/api/health",
+        destination: `${backendUrl}/health`,
+      },
+      {
+        source: "/api/:path*",
+        destination: `${backendUrl}/api/:path*`,
+      },
+      {
+        source: "/images/:path*",
+        destination: `${backendUrl}/images/:path*`,
+      },
+    ];
+  },
 };
 
 export default nextConfig;

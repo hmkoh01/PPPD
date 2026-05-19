@@ -4,16 +4,25 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { StudentShell } from "@/components/student/StudentShell";
 import { StudentStepper } from "@/components/student/StudentStepper";
-import { Card } from "@/components/ui/Card";
 import { CameraCapture } from "@/components/camera/CameraCapture";
-import {
-  getDormitorySession,
-  statusToPath,
-  updateDormitorySession,
-} from "@/lib/session";
+import { getDormitorySession, updateDormitorySession } from "@/lib/session";
 import { uploadInitialImage } from "@/lib/api";
 import { resolveImageUrl } from "@/lib/image";
 import type { DormitorySession } from "@/lib/types";
+
+const COPY = {
+  title: "\uc785\uc0ac \ucd2c\uc601",
+  back: "\ucc98\uc74c\uc73c\ub85c",
+  room: "\ubc30\uc815 \ud638\uc2e4",
+  reference: "\uae30\uc900 \uc0ac\uc9c4",
+  referenceAlt: "\uae30\uc900 \uc0ac\uc9c4",
+  referenceFallback: "\uae30\uc900 \uc0ac\uc9c4\uc744 \ubd88\ub7ec\uc62c \uc218 \uc5c6\uc5b4\uc694.",
+  cameraTitle: "\uc785\uc0ac \uc0ac\uc9c4 \ucd2c\uc601",
+  cameraDescription: "\uae30\uc900 \uc0ac\uc9c4\uacfc \uac19\uc740 \uad6c\ub3c4\ub85c \ucd2c\uc601\ud574 \uc8fc\uc138\uc694.",
+  uploadErrorMissing: "\uc810\uac80 ID\uac00 \uc5c6\uc2b5\ub2c8\ub2e4. \ub2e4\uc2dc \uc778\uc99d\ud574 \uc8fc\uc138\uc694.",
+  uploadError: "\uc0ac\uc9c4 \uc5c5\ub85c\ub4dc\uc5d0 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4.",
+  uploading: "\uc0ac\uc9c4\uc744 \uc5c5\ub85c\ub4dc\ud558\ub294 \uc911\uc785\ub2c8\ub2e4.",
+};
 
 export default function StudentCheckinPage() {
   const router = useRouter();
@@ -28,18 +37,16 @@ export default function StudentCheckinPage() {
       router.replace("/student/login");
       return;
     }
-    if (s.status !== "ready") {
-      router.replace(statusToPath(s.status));
-      return;
-    }
     setSession(s);
   }, [router]);
 
   if (!session) return null;
 
+  const refUrl = resolveImageUrl(session.refImageUrl);
+
   const handleCapture = async (blob: Blob) => {
     if (!session.inspectionId) {
-      setUploadError("점검 ID를 찾을 수 없습니다. 다시 로그인해 주세요.");
+      setUploadError(COPY.uploadErrorMissing);
       return;
     }
     setUploading(true);
@@ -52,67 +59,59 @@ export default function StudentCheckinPage() {
       });
       router.push("/student/checkout");
     } catch (err) {
-      setUploadError(
-        err instanceof Error ? err.message : "업로드에 실패했습니다."
-      );
+      setUploadError(err instanceof Error ? err.message : COPY.uploadError);
       setUploading(false);
     }
   };
 
-  const refUrl = resolveImageUrl(session.refImageUrl);
-
   return (
-    <StudentShell title="입사 사진 촬영" back={{ label: "처음으로", href: "/student" }}>
-      <StudentStepper currentStep={1} />
+    <StudentShell
+      title={COPY.title}
+      back={{ label: COPY.back, href: "/" }}
+      trailing={`${session.roomNumber}\ud638`}
+    >
+      <StudentStepper currentStep={2} />
 
-      <Card title="입사 초기 사진 촬영">
-        <p className="text-sm text-gray-600 leading-relaxed">
-          기준 사진의 구도에 맞춰 방 전체를 촬영해 주세요.
-          이 사진은 퇴사 때 비교 기준으로 사용됩니다.
-        </p>
-      </Card>
-
-      {/* 호실 정보 */}
-      <div className="bg-indigo-50 rounded-xl px-4 py-3 text-sm">
-        <span className="text-indigo-600 font-medium">배정 호실: </span>
-        <span className="text-indigo-900 font-bold">{session.roomNumber}호</span>
+      <div className="rounded-2xl bg-white px-4 py-3 text-sm leading-relaxed text-gray-600 ring-1 ring-gray-100">
+        {COPY.cameraDescription}
       </div>
 
-      {/* 기준 사진 미리보기 */}
-      <div className="space-y-1">
-        <p className="text-xs text-gray-500 font-medium">기준 사진 (관리자 등록)</p>
+      <section className="space-y-2">
+        <div className="flex items-center justify-between text-xs font-semibold text-gray-500">
+          <span>{COPY.reference}</span>
+        </div>
         {refUrl && !refImgErr ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={refUrl}
-            alt="기준 사진"
+            alt={COPY.referenceAlt}
             onError={() => setRefImgErr(true)}
-            className="w-full rounded-2xl object-cover aspect-video bg-gray-100"
+            className="aspect-[16/9] max-h-44 w-full rounded-[20px] bg-gray-100 object-cover ring-1 ring-gray-100"
           />
         ) : (
-          <div className="bg-gray-100 rounded-2xl aspect-video flex flex-col items-center justify-center gap-2 text-gray-400">
-            <span className="text-3xl">🖼️</span>
-            <p className="text-sm">기준 사진 없음</p>
+          <div className="flex aspect-[16/9] max-h-44 items-center justify-center rounded-[20px] bg-gray-100 text-sm text-gray-400">
+            {COPY.referenceFallback}
           </div>
         )}
-      </div>
+      </section>
 
-      {/* 카메라 */}
       {uploading ? (
-        <div className="bg-gray-50 rounded-2xl px-4 py-6 flex flex-col items-center gap-3">
-          <div className="w-6 h-6 border-2 border-indigo-300 border-t-indigo-600 rounded-full animate-spin" />
-          <p className="text-sm text-gray-500">업로드 중…</p>
+        <div className="flex flex-col items-center gap-3 rounded-[24px] bg-white px-4 py-7 ring-1 ring-gray-100">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-blue-100 border-t-blue-600" />
+          <p className="text-sm text-gray-500">{COPY.uploading}</p>
         </div>
       ) : (
         <CameraCapture
           mode="checkin"
+          title={COPY.cameraTitle}
+          description={COPY.cameraDescription}
           overlayImageUrl={refUrl ?? undefined}
           onCapture={handleCapture}
         />
       )}
 
       {uploadError && (
-        <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
+        <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-red-100">
           {uploadError}
         </div>
       )}

@@ -17,7 +17,7 @@ export function ReviewList({
 }: ReviewListProps) {
   if (inspections.length === 0) {
     return (
-      <div className="text-center py-12 text-gray-400 text-sm">
+      <div className="rounded-[24px] bg-white py-12 text-center text-sm text-gray-400 ring-1 ring-gray-100">
         검토할 점검이 없습니다.
       </div>
     );
@@ -32,16 +32,16 @@ export function ReviewList({
             <button
               onClick={() => onSelect(insp.id)}
               className={[
-                "w-full text-left px-4 py-3 rounded-xl border transition-colors",
+                "w-full rounded-[20px] px-4 py-4 text-left transition-colors",
                 selectedId === insp.id
-                  ? "border-indigo-400 bg-indigo-50"
-                  : "border-gray-100 bg-white hover:bg-gray-50",
+                  ? "bg-blue-50 ring-2 ring-blue-200"
+                  : "bg-white ring-1 ring-gray-100 hover:bg-gray-50",
               ].join(" ")}
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <p className="text-sm font-semibold text-gray-900">
+                    <p className="text-lg font-extrabold text-gray-950">
                       {room ? `${room.room_number}호` : `호실 #${insp.room_id}`}
                     </p>
                     {room?.student && (
@@ -55,7 +55,7 @@ export function ReviewList({
                       ? new Date(insp.submitted_at).toLocaleString("ko-KR")
                       : "제출일 없음"}
                     {insp.issues && insp.issues.length > 0 && (
-                      <span className="ml-2 text-orange-500">
+                      <span className="ml-2 rounded-full bg-amber-50 px-2 py-0.5 text-amber-700">
                         이슈 {insp.issues.length}건
                       </span>
                     )}

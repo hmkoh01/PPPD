@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+data/db.sqlite
+data/images/*
+!data/images/.gitkeep

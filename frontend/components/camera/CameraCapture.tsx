@@ -1,10 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
-import { EdgeOverlay } from "./EdgeOverlay";
-import { CapturePreviewModal } from "./CapturePreviewModal";
 import { blobToObjectUrl, revokeObjectUrl } from "@/lib/image";
+import { FullscreenCameraModal } from "./FullscreenCameraModal";
 
 export type CameraMode = "checkin" | "checkout" | "closeup";
 
@@ -12,23 +11,25 @@ export interface CameraCaptureProps {
   mode: CameraMode;
   title?: string;
   description?: string;
+  captureButtonLabel?: string;
   overlayImageUrl?: string;
   onCapture: (blob: Blob) => void;
   onCancel?: () => void;
+  compact?: boolean;
 }
 
 const MODE_DEFAULTS: Record<CameraMode, { title: string; description: string }> = {
   checkin: {
     title: "입사 사진 촬영",
-    description: "기준 사진의 구도에 맞춰 방 전체를 촬영해 주세요.",
+    description: "기준 사진과 비슷한 구도로 방 전체가 보이게 촬영해 주세요.",
   },
   checkout: {
     title: "퇴사 사진 촬영",
-    description: "입사 때와 동일한 각도에서 현재 방 상태를 촬영해 주세요.",
+    description: "입사 때와 같은 구도로 퇴사 전 상태를 촬영해 주세요.",
   },
   closeup: {
     title: "클로즈업 촬영",
-    description: "표시된 영역을 가까이서 촬영해 주세요.",
+    description: "표시된 영역이 잘 보이도록 가까이에서 촬영해 주세요.",
   },
 };
 
@@ -36,205 +37,96 @@ export function CameraCapture({
   mode,
   title,
   description,
+  captureButtonLabel,
   overlayImageUrl,
   onCapture,
   onCancel,
+  compact = false,
 }: CameraCaptureProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-
-  const [cameraError, setCameraError] = useState<string | null>(null);
-  const [cameraReady, setCameraReady] = useState(false);
-
-  // 미리보기 모달 상태
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [capturedBlob, setCapturedBlob] = useState<Blob | null>(null);
-  const [modalOpen, setModalOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [open, setOpen] = useState(false);
+  const [capturedUrl, setCapturedUrl] = useState<string | null>(null);
+  const [cameraSupported, setCameraSupported] = useState(true);
 
   const defaults = MODE_DEFAULTS[mode];
   const displayTitle = title ?? defaults.title;
   const displayDescription = description ?? defaults.description;
-
-  // 카메라 시작
-  const startCamera = useCallback(async () => {
-    // 이전 스트림 정리
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-
-    setCameraError(null);
-    setCameraReady(false);
-
-    // 보안 컨텍스트 확인 (HTTPS 또는 localhost 필요)
-    if (!navigator.mediaDevices) {
-      setCameraError(
-        "카메라를 사용하려면 HTTPS 또는 localhost 환경이 필요합니다."
-      );
-      return;
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: "environment" },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-        audio: false,
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-    } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.name === "NotAllowedError"
-            ? "카메라 접근 권한이 없습니다. 브라우저 설정에서 허용해 주세요."
-            : err.name === "NotFoundError"
-            ? "카메라를 찾을 수 없습니다."
-            : err.name === "OverconstrainedError"
-            ? "카메라 설정을 지원하지 않습니다. 다시 시도해 주세요."
-            : `카메라 오류: ${err.message}`
-          : "카메라를 시작할 수 없습니다.";
-      setCameraError(message);
-    }
-  }, []);
-
-  // 스트림 정리
-  const stopCamera = useCallback(() => {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-  }, []);
+  const modalOverlayImageUrl = mode === "closeup" ? undefined : overlayImageUrl;
 
   useEffect(() => {
-    startCamera();
-    return () => stopCamera();
-  }, [startCamera, stopCamera]);
+    setCameraSupported(Boolean(navigator.mediaDevices?.getUserMedia));
+  }, []);
 
-  // 이전 previewUrl 해제
   useEffect(() => {
     return () => {
-      if (previewUrl) revokeObjectUrl(previewUrl);
+      if (capturedUrl) revokeObjectUrl(capturedUrl);
     };
-  }, [previewUrl]);
+  }, [capturedUrl]);
 
-  const handleShutter = () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas || !cameraReady) return;
-
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext("2d")?.drawImage(video, 0, 0);
-
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) return;
-        if (previewUrl) revokeObjectUrl(previewUrl);
-        const url = blobToObjectUrl(blob);
-        setCapturedBlob(blob);
-        setPreviewUrl(url);
-        setModalOpen(true);
-      },
-      "image/jpeg",
-      0.92
-    );
+  const handleUse = (blob: Blob) => {
+    if (capturedUrl) revokeObjectUrl(capturedUrl);
+    setCapturedUrl(blobToObjectUrl(blob));
+    onCapture(blob);
   };
 
-  const handleUse = () => {
-    if (!capturedBlob) return;
-    setModalOpen(false);
-    onCapture(capturedBlob);
+  const handleFallbackFile = (file: File | undefined) => {
+    if (!file) return;
+    handleUse(file);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const handleRetake = () => {
-    setModalOpen(false);
-    if (previewUrl) {
-      revokeObjectUrl(previewUrl);
-      setPreviewUrl(null);
-    }
-    setCapturedBlob(null);
-  };
+  const content = (
+    <>
+      {!compact && (
+        <div>
+          <p className="text-base font-bold text-gray-950">{displayTitle}</p>
+          <p className="mt-1 text-sm leading-relaxed text-gray-500">{displayDescription}</p>
+        </div>
+      )}
 
-  const handleModalClose = () => {
-    setModalOpen(false);
-  };
+      {capturedUrl && (
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-gray-500">선택된 사진</p>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={capturedUrl} alt="선택된 촬영 사진" className="h-40 w-full rounded-[20px] object-cover ring-1 ring-gray-100" />
+        </div>
+      )}
 
-  return (
-    <div className="space-y-3">
-      {/* 제목 + 설명 */}
-      <div>
-        <p className="text-sm font-semibold text-gray-800">{displayTitle}</p>
-        <p className="text-xs text-gray-500 mt-0.5">{displayDescription}</p>
-      </div>
-
-      {/* 카메라 뷰파인더 */}
-      <div className="relative rounded-2xl overflow-hidden bg-gray-900 aspect-video">
-        {/* 비디오 */}
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          onCanPlay={() => setCameraReady(true)}
-          className="w-full h-full object-cover"
-        />
-
-        {/* 엣지 오버레이 */}
-        {overlayImageUrl && cameraReady && (
-          <EdgeOverlay imageUrl={overlayImageUrl} />
-        )}
-
-        {/* 카메라 오류 */}
-        {cameraError && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-4 text-center bg-gray-900">
-            <span className="text-3xl">📷</span>
-            <p className="text-sm text-white/70">{cameraError}</p>
-            <Button variant="secondary" size="sm" onClick={startCamera}>
-              다시 시도
-            </Button>
-          </div>
-        )}
-
-        {/* 로딩 (카메라 준비 전) */}
-        {!cameraError && !cameraReady && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="w-6 h-6 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-          </div>
-        )}
-      </div>
-
-      {/* 숨겨진 캔버스 */}
-      <canvas ref={canvasRef} className="hidden" />
-
-      {/* 버튼 */}
       <div className="flex gap-2">
         {onCancel && (
           <Button variant="ghost" size="md" fullWidth onClick={onCancel}>
             취소
           </Button>
         )}
-        <Button
-          variant="primary"
-          size="lg"
-          fullWidth
-          disabled={!cameraReady || !!cameraError}
-          onClick={handleShutter}
-        >
-          촬영하기
+        <Button type="button" variant="primary" size="lg" fullWidth onClick={() => setOpen(true)}>
+          {capturedUrl ? "다시 촬영하기" : captureButtonLabel ?? "카메라로 촬영하기"}
         </Button>
       </div>
 
-      {/* 미리보기 모달 */}
-      <CapturePreviewModal
-        open={modalOpen}
-        imageUrl={previewUrl}
+      {!cameraSupported && (
+        <div className="rounded-2xl bg-amber-50 px-4 py-3 text-xs text-amber-800 ring-1 ring-amber-100">
+          이 브라우저에서는 카메라를 직접 열 수 없어요. 파일에서 선택해 주세요.
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            onChange={(event) => handleFallbackFile(event.target.files?.[0])}
+            className="mt-2 block w-full text-xs text-amber-900 file:mr-3 file:rounded-xl file:border-0 file:bg-amber-100 file:px-3 file:py-2 file:text-xs file:font-medium file:text-amber-900"
+          />
+        </div>
+      )}
+
+      <FullscreenCameraModal
+        open={open}
         title={displayTitle}
+        overlayImageUrl={modalOverlayImageUrl}
+        onClose={() => setOpen(false)}
         onUse={handleUse}
-        onRetake={handleRetake}
-        onClose={handleModalClose}
       />
-    </div>
+    </>
   );
+
+  if (compact) return <div className="space-y-2">{content}</div>;
+
+  return <div className="space-y-4 rounded-[24px] bg-white p-5 ring-1 ring-gray-100">{content}</div>;
 }

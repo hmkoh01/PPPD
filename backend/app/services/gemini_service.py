@@ -32,6 +32,12 @@ from app.services.storage_service import (
 
 logger = logging.getLogger(__name__)
 
+_PLACEHOLDER_API_KEYS = {
+    "your_gemini_api_key_here",
+    "YOUR_GEMINI_API_KEY",
+    "your_api_key_here",
+}
+
 # ────────────────────────────────────────────────────────────
 # 프롬프트 (Streamlit 원본 의미 보존)
 # ────────────────────────────────────────────────────────────
@@ -163,8 +169,8 @@ def analyze_closeup(
     - FastAPI endpoint 에서 호출 시 asyncio.to_thread 또는 run_in_threadpool 로 감싸세요.
     """
     # ── 설정 확인 ────────────────────────────────────────────
-    api_key = settings.GEMINI_API_KEY
-    if not api_key:
+    api_key = (settings.GEMINI_API_KEY or "").strip()
+    if not api_key or api_key in _PLACEHOLDER_API_KEYS:
         raise GeminiConfigError(
             "GEMINI_API_KEY 환경변수가 설정되지 않았습니다. "
             "backend/.env 파일에 GEMINI_API_KEY=... 를 추가하세요."

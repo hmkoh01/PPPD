@@ -11,19 +11,19 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const variantClasses: Record<Variant, string> = {
   primary:
-    "bg-indigo-600 text-white hover:bg-indigo-700 active:bg-indigo-800 shadow-sm",
+    "bg-blue-600 text-white hover:bg-blue-700 active:bg-blue-800 shadow-soft",
   secondary:
-    "bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 active:bg-gray-100 shadow-sm",
+    "bg-gray-100 text-gray-900 hover:bg-gray-200 active:bg-gray-300",
   danger:
-    "bg-red-600 text-white hover:bg-red-700 active:bg-red-800 shadow-sm",
+    "bg-red-500 text-white hover:bg-red-600 active:bg-red-700 shadow-soft",
   ghost:
-    "bg-transparent text-indigo-600 hover:bg-indigo-50 active:bg-indigo-100",
+    "bg-transparent text-gray-600 hover:bg-gray-100 active:bg-gray-200",
 };
 
 const sizeClasses: Record<Size, string> = {
-  sm: "px-3 py-1.5 text-sm rounded-lg",
-  md: "px-4 py-2.5 text-base rounded-xl",
-  lg: "px-6 py-3.5 text-lg rounded-2xl font-semibold",
+  sm: "h-10 px-3 text-sm rounded-xl",
+  md: "h-12 px-4 text-base rounded-2xl",
+  lg: "h-14 px-6 text-lg rounded-[20px] font-semibold",
 };
 
 export function Button({
@@ -38,11 +38,11 @@ export function Button({
   return (
     <button
       className={[
-        "inline-flex items-center justify-center gap-2 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500",
+        "inline-flex items-center justify-center gap-2 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-50",
         variantClasses[variant],
         sizeClasses[size],
         fullWidth ? "w-full" : "",
-        disabled ? "opacity-50 cursor-not-allowed pointer-events-none" : "",
+        disabled ? "cursor-not-allowed bg-gray-200 text-gray-400 shadow-none pointer-events-none" : "",
         className,
       ]
         .filter(Boolean)
