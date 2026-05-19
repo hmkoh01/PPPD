@@ -12,7 +12,8 @@ interface StudentStatusCardProps {
 const messages: Record<RoomStatus, string> = {
   ready: "학생 인증이 완료되었어요. 입사 기준 사진을 촬영해 주세요.",
   checked_in: "입사 사진이 저장되었어요. 퇴사 후 상태를 같은 구도로 촬영해 주세요.",
-  pending_review: "제출이 완료되었어요. 관리자가 점검 결과를 확인하고 있습니다.",
+  needs_confirmation: "이전 사진과 다른 부분이 감지되었어요. 표시된 영역을 가까이서 촬영해 주세요.",
+  pending_review: "확인 자료 제출이 완료되었어요. 관리자가 전후 사진과 확인 자료를 함께 검토합니다.",
   approved: "퇴사 점검이 승인되었어요. 필요한 절차가 완료되었습니다.",
   rejected: "재점검이 필요합니다. 관리자 피드백을 확인하고 다시 제출해 주세요.",
 };
@@ -20,6 +21,7 @@ const messages: Record<RoomStatus, string> = {
 const surfaceClasses: Record<RoomStatus, string> = {
   ready: "bg-white",
   checked_in: "bg-blue-50 ring-blue-100",
+  needs_confirmation: "bg-orange-50 ring-orange-100",
   pending_review: "bg-amber-50 ring-amber-100",
   approved: "bg-emerald-50 ring-emerald-100",
   rejected: "bg-red-50 ring-red-100",

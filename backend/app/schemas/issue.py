@@ -12,6 +12,8 @@ class IssueOut(BaseModel):
     width: int
     height: int
     status: str
+    candidate_type: str = "small_damage"
+    student_note: str | None = None
     vlm_reason: str | None = None
     crop_image_path: str | None = None
     crop_image_url: str | None = None

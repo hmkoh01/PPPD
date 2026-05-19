@@ -39,6 +39,8 @@ def issue_to_schema(issue: Issue) -> IssueOut:
         width=issue.width,
         height=issue.height,
         status=issue.status,
+        candidate_type=issue.candidate_type or "small_damage",
+        student_note=issue.student_note,
         vlm_reason=issue.vlm_reason,
         crop_image_path=issue.crop_image_path,
         crop_image_url=_url(issue.crop_image_path),

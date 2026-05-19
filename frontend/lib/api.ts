@@ -200,11 +200,17 @@ export function submitInspection(inspectionId: number): Promise<InspectionStatus
 
 export function uploadIssueCloseup(
   issueId: number,
-  fileOrBlob: File | Blob
+  fileOrBlob: File | Blob,
+  studentNote?: string,
 ): Promise<CloseupResponse> {
+  const form = new FormData();
+  form.append("file", fileOrBlob);
+  if (studentNote?.trim()) {
+    form.append("student_note", studentNote.trim());
+  }
   return apiFetch(`/api/issues/${issueId}/closeup`, {
     method: "POST",
-    body: _buildImageForm(fileOrBlob),
+    body: form,
   });
 }
 

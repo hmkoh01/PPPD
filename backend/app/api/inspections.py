@@ -165,7 +165,7 @@ async def upload_final_image(
     # inspection 업데이트
     insp.final_image_path = vision_result.aligned_final_image_path
 
-    # 새 이슈 생성
+    # 새 이슈 생성 — AI 감지 결과는 "확인 필요 후보"로 등록 (손상 확정이 아님)
     new_issues: list[Issue] = []
     for di in vision_result.issues:
         issue = Issue(
@@ -174,11 +174,18 @@ async def upload_final_image(
             y=di.y,
             width=di.width,
             height=di.height,
-            status=IssueStatus.RED,
+            status=IssueStatus.NEEDS_CONFIRMATION,
             crop_image_path=di.crop_image_path,
+            candidate_type=di.candidate_type,
         )
         db.add(issue)
         new_issues.append(issue)
+
+    # 확인 필요 영역이 감지된 경우 inspection/room 상태를 needs_confirmation 으로 전환
+    if new_issues:
+        insp.status = InspectionStatus.NEEDS_CONFIRMATION
+        if room:
+            room.status = RoomStatus.NEEDS_CONFIRMATION
 
     db.commit()
     db.refresh(insp)
@@ -205,11 +212,12 @@ def submit_inspection(inspection_id: int, db: Session = Depends(get_db)) -> Any:
     """
     insp = get_inspection_or_404(db, inspection_id)
 
-    red_issues = [i for i in insp.issues if i.status == IssueStatus.RED]
-    if red_issues:
+    # 확인 자료(근접 촬영+메모)가 제출되지 않은 이슈가 있으면 제출 불가
+    unresolved = [i for i in insp.issues if i.status == IssueStatus.NEEDS_CONFIRMATION]
+    if unresolved:
         raise HTTPException(
             status_code=400,
-            detail=f"미검증 이슈 {len(red_issues)}건이 남아 있습니다. 모두 클로즈업 촬영을 완료해 주세요.",
+            detail=f"확인 자료가 제출되지 않은 영역 {len(unresolved)}건이 남아 있습니다. 모든 영역의 근접 촬영을 완료해 주세요.",
         )
 
     insp.status = InspectionStatus.PENDING_REVIEW

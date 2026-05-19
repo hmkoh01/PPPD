@@ -24,7 +24,7 @@ from app.services.storage_service import (
     load_image_bgr,
     save_ndarray,
 )
-from app.vision import ImageAlignmentError, align_images, detect_difference
+from app.vision import DiffCandidate, ImageAlignmentError, align_images, detect_difference
 
 
 # ────────────────────────────────────────────────────────────
@@ -49,12 +49,20 @@ class VisionDetectionFailed(VisionServiceError):
 
 @dataclass
 class DetectedIssue:
-    """검출된 단일 이슈 영역."""
+    """
+    감지된 단일 전후 차이 후보 영역.
+
+    이 결과는 "손상 확정"이 아니라 "확인이 필요한 후보"입니다.
+    학생의 근접 촬영 자료와 관리자의 최종 판단을 보조하기 위한 정보입니다.
+    """
     x: int
     y: int
     width: int
     height: int
     crop_image_path: str | None = None  # DB 저장용 파일명 (상대 경로)
+    score: float = 0.0                  # 후보 신뢰 점수 (0.0~1.0, 참고용)
+    reason: str = "전후 이미지에서 국소적인 구조 차이가 감지됨"  # 감지 이유
+    candidate_type: str = "small_damage"  # small_damage | large_object | recapture_recommended
 
 
 @dataclass
@@ -118,19 +126,19 @@ def crop_box(image: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray | 
     return image[y : y + h, x : x + w].copy()
 
 
-def boxes_to_detected_issues(
-    boxes: list[tuple[int, int, int, int]],
+def candidates_to_detected_issues(
+    candidates: list[DiffCandidate],
     aligned_bgr: np.ndarray,
     inspection_id: int | None,
 ) -> list[DetectedIssue]:
     """
-    detect_difference() 가 반환한 bounding box 목록을 DetectedIssue 목록으로 변환합니다.
-    각 이슈마다 크롭 이미지를 저장하고 파일명을 DetectedIssue.crop_image_path 에 기록합니다.
+    detect_difference() 가 반환한 DiffCandidate 목록을 DetectedIssue 목록으로 변환합니다.
+    각 후보마다 크롭 이미지를 저장하고 파일명을 DetectedIssue.crop_image_path 에 기록합니다.
 
     Parameters
     ----------
-    boxes : list[tuple[int, int, int, int]]
-        (x, y, width, height) bounding box 목록.
+    candidates : list[DiffCandidate]
+        detect_difference() 가 반환한 전후 차이 후보 목록.
     aligned_bgr : np.ndarray
         정합된 final 이미지 (크롭 소스).
     inspection_id : int | None
@@ -139,11 +147,11 @@ def boxes_to_detected_issues(
     Returns
     -------
     list[DetectedIssue]
-        crop_image_path 가 채워진 DetectedIssue 목록.
+        crop_image_path, score, reason 이 채워진 DetectedIssue 목록.
     """
     issues: list[DetectedIssue] = []
-    for raw_box in boxes:
-        cx, cy, cw, ch = clamp_box_to_image(*raw_box, aligned_bgr.shape)
+    for candidate in candidates:
+        cx, cy, cw, ch = clamp_box_to_image(*candidate.box, aligned_bgr.shape)
         crop = crop_box(aligned_bgr, (cx, cy, cw, ch))
         crop_path: str | None = None
         if crop is not None:
@@ -153,7 +161,13 @@ def boxes_to_detected_issues(
                 inspection_id=inspection_id,
             )
             crop_path = stored.filename
-        issues.append(DetectedIssue(x=cx, y=cy, width=cw, height=ch, crop_image_path=crop_path))
+        issues.append(DetectedIssue(
+            x=cx, y=cy, width=cw, height=ch,
+            crop_image_path=crop_path,
+            score=candidate.score,
+            reason=candidate.reason,
+            candidate_type=candidate.candidate_type,
+        ))
     return issues
 
 
@@ -249,20 +263,20 @@ def align_and_detect(
             f"정합 이미지 저장 실패 — {exc}"
         ) from exc
 
-    # ── 4. SSIM 차이 검출 ───────────────────────────────────
+    # ── 4. SSIM 전후 차이 후보 검출 ─────────────────────────
     try:
-        boxes = detect_difference(ref_bgr, aligned_bgr)
+        candidates = detect_difference(ref_bgr, aligned_bgr)
     except Exception as exc:
         raise VisionDetectionFailed(
-            f"차이 검출 중 오류가 발생했습니다: {exc}"
+            f"차이 후보 검출 중 오류가 발생했습니다: {exc}"
         ) from exc
 
-    # ── 5. 이슈 크롭 저장 ───────────────────────────────────
+    # ── 5. 후보 크롭 이미지 저장 ────────────────────────────
     try:
-        issues = boxes_to_detected_issues(boxes, aligned_bgr, inspection_id)
+        issues = candidates_to_detected_issues(candidates, aligned_bgr, inspection_id)
     except Exception as exc:
         raise VisionDetectionFailed(
-            f"이슈 크롭 이미지 저장 중 오류가 발생했습니다: {exc}"
+            f"확인 필요 후보 크롭 이미지 저장 중 오류가 발생했습니다: {exc}"
         ) from exc
 
     return VisionDetectionResult(

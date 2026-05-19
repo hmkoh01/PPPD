@@ -12,13 +12,14 @@ class RoomStatus:
     rooms.status 에 저장되는 값.
     최신 Inspection 상태의 비정규화(denormalized) 캐시 역할을 겸합니다.
     """
-    READY          = "ready"           # 호실 등록 완료, 점검 미시작
-    CHECKED_IN     = "checked_in"      # 학생 초기 사진 촬영 완료
-    PENDING_REVIEW = "pending_review"  # 학생 최종 제출 완료, 관리자 검토 대기
-    APPROVED       = "approved"        # 관리자 합격 처리
-    REJECTED       = "rejected"        # 관리자 재점검 요청
+    READY                = "ready"                # 호실 등록 완료, 점검 미시작
+    CHECKED_IN           = "checked_in"           # 학생 초기 사진 촬영 완료
+    NEEDS_CONFIRMATION   = "needs_confirmation"   # AI 차이 후보 감지, 학생 확인 자료 대기 중
+    PENDING_REVIEW       = "pending_review"       # 학생 최종 제출 완료, 관리자 검토 대기
+    APPROVED             = "approved"             # 관리자 최종 승인
+    REJECTED             = "rejected"             # 관리자 재점검 요청
 
-    ALL: list[str] = [READY, CHECKED_IN, PENDING_REVIEW, APPROVED, REJECTED]
+    ALL: list[str] = [READY, CHECKED_IN, NEEDS_CONFIRMATION, PENDING_REVIEW, APPROVED, REJECTED]
 
     @classmethod
     def is_valid(cls, value: str) -> bool:
@@ -27,13 +28,14 @@ class RoomStatus:
 
 class InspectionStatus:
     """inspections.status 에 저장되는 값."""
-    READY          = "ready"
-    CHECKED_IN     = "checked_in"
-    PENDING_REVIEW = "pending_review"
-    APPROVED       = "approved"
-    REJECTED       = "rejected"
+    READY                = "ready"
+    CHECKED_IN           = "checked_in"
+    NEEDS_CONFIRMATION   = "needs_confirmation"   # 확인 필요 영역 감지, 학생 자료 제출 전
+    PENDING_REVIEW       = "pending_review"
+    APPROVED             = "approved"
+    REJECTED             = "rejected"
 
-    ALL: list[str] = [READY, CHECKED_IN, PENDING_REVIEW, APPROVED, REJECTED]
+    ALL: list[str] = [READY, CHECKED_IN, NEEDS_CONFIRMATION, PENDING_REVIEW, APPROVED, REJECTED]
 
     @classmethod
     def is_valid(cls, value: str) -> bool:
@@ -41,15 +43,21 @@ class InspectionStatus:
 
 
 class IssueStatus:
-    """issues.status 에 저장되는 값."""
-    RED    = "red"     # 미검증 (클로즈업 미촬영)
-    ORANGE = "orange"  # Gemini → suspicious (의심 영역)
-    GREEN  = "green"   # Gemini → clean (이상 없음)
+    """
+    issues.status 에 저장되는 값.
 
-    ALL: list[str] = [RED, ORANGE, GREEN]
+    설계 철학: "AI는 판정자가 아니라 확인 보조자입니다."
+    AI는 전후 차이 후보를 감지하고, 학생은 확인 자료를 제출하며,
+    관리자가 최종 판단합니다. 상태명은 색깔 중심이 아닌 의미 중심으로 정의합니다.
+    """
+    NEEDS_CONFIRMATION = "needs_confirmation"  # AI 감지 완료, 학생 확인 자료(근접 촬영+메모) 미제출
+    EVIDENCE_SUBMITTED = "evidence_submitted"  # 학생이 근접 촬영과 메모를 제출한 상태
+    CLEARED            = "cleared"             # 추가 확인이 필요 없다고 판단된 상태
 
-    # 제출 가능 상태 (red 가 하나라도 남아 있으면 제출 불가)
-    RESOLVED: list[str] = [ORANGE, GREEN]
+    ALL: list[str] = [NEEDS_CONFIRMATION, EVIDENCE_SUBMITTED, CLEARED]
+
+    # 제출 가능 상태 (needs_confirmation 이 하나라도 남아 있으면 제출 불가)
+    RESOLVED: list[str] = [EVIDENCE_SUBMITTED, CLEARED]
 
     @classmethod
     def is_valid(cls, value: str) -> bool:
