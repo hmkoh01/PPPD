@@ -85,6 +85,16 @@ EDGE_MARGIN_RATIO: float = 0.05
 # ORB 매칭·RANSAC 에 필요한 최소 좋은 매칭 개수
 _MIN_GOOD_MATCHES = 15
 
+ALIGNMENT_LOCKED_THRESHOLD: float = 0.86
+ALIGNMENT_GOOD_THRESHOLD: float = 0.78
+ALIGNMENT_ALMOST_THRESHOLD: float = 0.64
+ALIGNMENT_TARGET_MATCHES: int = 65
+ALIGNMENT_LOCKED_MIN_INLIER_RATIO: float = 0.72
+ALIGNMENT_LOCKED_MAX_BORDER_RATIO: float = 0.08
+ALIGNMENT_LOCKED_MIN_SHAPE_SCORE: float = 0.78
+ALIGNMENT_LOCKED_MIN_SIMILARITY_SCORE: float = 0.72
+ALIGNMENT_MAX_BORDER_RATIO: float = 0.14
+
 
 # ────────────────────────────────────────────────────────────
 # 데이터 클래스
@@ -116,6 +126,18 @@ class DiffCandidate:
     score: float
     reason: str
     candidate_type: str = "small_damage"
+
+
+@dataclass
+class AlignmentCheckResult:
+    """Lightweight alignment quality result for pre-upload capture validation."""
+    ok: bool
+    score: float
+    status: str
+    message: str
+    hints: list[str]
+    good_matches: int | None = None
+    inlier_ratio: float | None = None
 
 
 # ────────────────────────────────────────────────────────────
@@ -210,6 +232,176 @@ def align_images(ref_img: np.ndarray, curr_img: np.ndarray) -> np.ndarray:
     h, w = ref_img.shape[:2]
     aligned = cv2.warpPerspective(curr_img, H, (w, h))
     return aligned
+
+
+def _alignment_message(status: str) -> str:
+    if status == "locked":
+        return "정렬 완료. 자동으로 촬영할게요."
+    if status == "good":
+        return "거의 맞았어요. 그대로 유지해 주세요."
+    if status == "almost":
+        return "조금만 더 맞춰주세요."
+    return "기준 사진과 아직 어긋나 있어요."
+
+
+def _homography_shape_penalty(H: np.ndarray) -> float:
+    corners = np.float32([[0, 0], [1, 0], [1, 1], [0, 1]]).reshape(-1, 1, 2)
+    warped = cv2.perspectiveTransform(corners, H).reshape(-1, 2)
+    widths = [
+        float(np.linalg.norm(warped[1] - warped[0])),
+        float(np.linalg.norm(warped[2] - warped[3])),
+    ]
+    heights = [
+        float(np.linalg.norm(warped[3] - warped[0])),
+        float(np.linalg.norm(warped[2] - warped[1])),
+    ]
+    max_width = max(widths)
+    min_width = max(min(widths), 1e-6)
+    max_height = max(heights)
+    min_height = max(min(heights), 1e-6)
+    skew = max(max_width / min_width, max_height / min_height)
+    return min(max(skew - 1.0, 0.0) / 1.2, 1.0)
+
+
+def check_alignment_quality(ref_img: np.ndarray, curr_img: np.ndarray) -> AlignmentCheckResult:
+    """
+    Estimate whether the current capture is close enough to the reference.
+
+    This function does not save images and does not run difference detection.
+    It reuses ORB matching and homography estimation, then combines match count,
+    RANSAC inlier ratio, transform distortion, post-warp similarity, and black
+    border ratio into a normalized 0.0-1.0 score.
+    """
+    if ref_img is None or curr_img is None:
+        raise ValueError("ref_img and curr_img must not be None.")
+    if ref_img.size == 0 or curr_img.size == 0:
+        raise ValueError("input images must not be empty.")
+    if ref_img.ndim != 3 or ref_img.shape[2] != 3:
+        raise ValueError("ref_img must be an HxWx3 BGR image.")
+    if curr_img.ndim != 3 or curr_img.shape[2] != 3:
+        raise ValueError("curr_img must be an HxWx3 BGR image.")
+
+    ref_gray = cv2.cvtColor(ref_img, cv2.COLOR_BGR2GRAY)
+    curr_gray = cv2.cvtColor(curr_img, cv2.COLOR_BGR2GRAY)
+
+    orb = cv2.ORB_create(nfeatures=2000)
+    kp1, des1 = orb.detectAndCompute(ref_gray, None)
+    kp2, des2 = orb.detectAndCompute(curr_gray, None)
+
+    if des1 is None or des2 is None or len(kp1) < 4 or len(kp2) < 4:
+        return AlignmentCheckResult(
+            ok=False,
+            score=0.0,
+            status="poor",
+            message=_alignment_message("poor"),
+            hints=["move_phone"],
+            good_matches=0,
+            inlier_ratio=0.0,
+        )
+
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+    raw = bf.knnMatch(des1, des2, k=2)
+
+    good: list[cv2.DMatch] = []
+    for pair in raw:
+        if len(pair) != 2:
+            continue
+        m, n = pair
+        if m.distance < 0.75 * n.distance:
+            good.append(m)
+
+    good_matches = len(good)
+    if good_matches < 4:
+        return AlignmentCheckResult(
+            ok=False,
+            score=0.0,
+            status="poor",
+            message=_alignment_message("poor"),
+            hints=["move_phone"],
+            good_matches=good_matches,
+            inlier_ratio=0.0,
+        )
+
+    src_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+    dst_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+
+    H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+    if H is None or mask is None:
+        match_score = min(good_matches / ALIGNMENT_TARGET_MATCHES, 1.0)
+        score = round(match_score * 0.35, 3)
+        return AlignmentCheckResult(
+            ok=False,
+            score=score,
+            status="poor",
+            message=_alignment_message("poor"),
+            hints=["reduce_tilt"],
+            good_matches=good_matches,
+            inlier_ratio=0.0,
+        )
+
+    inlier_ratio = float(mask.ravel().sum()) / max(good_matches, 1)
+    h, w = ref_img.shape[:2]
+    aligned = cv2.warpPerspective(curr_img, H, (w, h))
+
+    aligned_gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
+    ref_blur = cv2.GaussianBlur(ref_gray, (15, 15), 0)
+    aligned_blur = cv2.GaussianBlur(aligned_gray, (15, 15), 0)
+    similarity, _ = ssim(ref_blur, aligned_blur, win_size=21, data_range=255, full=True)
+    similarity_score = float(np.clip((similarity - 0.35) / 0.45, 0.0, 1.0))
+
+    source_mask = np.full(curr_gray.shape, 255, dtype=np.uint8)
+    warped_mask = cv2.warpPerspective(source_mask, H, (w, h))
+    border_ratio = 1.0 - (float(np.count_nonzero(warped_mask)) / float(warped_mask.size))
+    border_score = 1.0 - min(border_ratio / ALIGNMENT_MAX_BORDER_RATIO, 1.0)
+
+    match_score = min(good_matches / ALIGNMENT_TARGET_MATCHES, 1.0)
+    inlier_score = min(inlier_ratio / 0.75, 1.0)
+    shape_score = 1.0 - _homography_shape_penalty(H)
+
+    score = (
+        match_score * 0.25
+        + inlier_score * 0.25
+        + similarity_score * 0.30
+        + border_score * 0.12
+        + shape_score * 0.08
+    )
+    score = round(float(np.clip(score, 0.0, 1.0)), 3)
+
+    locked = (
+        score >= ALIGNMENT_LOCKED_THRESHOLD
+        and inlier_ratio >= ALIGNMENT_LOCKED_MIN_INLIER_RATIO
+        and border_ratio <= ALIGNMENT_LOCKED_MAX_BORDER_RATIO
+        and shape_score >= ALIGNMENT_LOCKED_MIN_SHAPE_SCORE
+        and similarity_score >= ALIGNMENT_LOCKED_MIN_SIMILARITY_SCORE
+    )
+
+    if locked:
+        status = "locked"
+    elif score >= ALIGNMENT_GOOD_THRESHOLD:
+        status = "good"
+    elif score >= ALIGNMENT_ALMOST_THRESHOLD:
+        status = "almost"
+    else:
+        status = "poor"
+
+    hints: list[str] = []
+    if status != "locked":
+        if border_ratio > ALIGNMENT_MAX_BORDER_RATIO:
+            hints.append("move_closer")
+        if shape_score < ALIGNMENT_LOCKED_MIN_SHAPE_SCORE:
+            hints.append("reduce_tilt")
+        if not hints:
+            hints.append("move_phone")
+
+    return AlignmentCheckResult(
+        ok=locked,
+        score=score,
+        status=status,
+        message=_alignment_message(status),
+        hints=hints,
+        good_matches=good_matches,
+        inlier_ratio=round(inlier_ratio, 3),
+    )
 
 
 # ────────────────────────────────────────────────────────────

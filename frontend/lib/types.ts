@@ -106,6 +106,16 @@ export interface FinalImageResponse {
   issues: Issue[];
 }
 
+export interface AlignmentCheckResponse {
+  ok: boolean;
+  score: number;
+  status: "poor" | "almost" | "good" | "locked";
+  message: string;
+  hints: string[];
+  good_matches?: number | null;
+  inlier_ratio?: number | null;
+}
+
 export interface CloseupResponse {
   issue: Issue;
   closeup_image_url?: string | null;

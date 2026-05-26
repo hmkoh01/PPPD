@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.core.constants import ImageType, InspectionStatus, IssueStatus, RoomStatus
@@ -21,6 +21,7 @@ from app.db.database import get_db
 from app.models.issue import Issue
 from app.models.room import Room
 from app.schemas.inspection import (
+    AlignmentCheckResponse,
     FinalImageResponse,
     InitialImageResponse,
     InspectionOut,
@@ -39,6 +40,7 @@ from app.services.vision_service import (
     VisionDetectionFailed,
     VisionServiceError,
     align_and_detect,
+    check_capture_alignment,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,6 +99,60 @@ async def upload_initial_image(
         status=insp.status,
         initial_image_path=stored.filename,
         initial_image_url=stored.public_url,
+    )
+
+
+@router.post(
+    "/{inspection_id}/alignment-check",
+    response_model=AlignmentCheckResponse,
+    summary="촬영 후보 이미지 정렬 품질 검사",
+)
+async def check_image_alignment(
+    inspection_id: int,
+    mode: Literal["checkin", "checkout"] = "checkout",
+    preview: bool = Query(False, description="실시간 preview 프레임 검사 여부"),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> Any:
+    """
+    촬영 후보 이미지가 기준 이미지와 충분히 비슷한 구도인지 검사합니다.
+
+    이미지를 저장하지 않고, 이슈를 만들지 않으며, inspection/room 상태도 변경하지 않습니다.
+    """
+    _ = preview
+    insp = get_inspection_or_404(db, inspection_id)
+
+    if mode == "checkin":
+        reference_path = insp.ref_image_path
+        missing_message = "기준 사진을 찾을 수 없습니다."
+    else:
+        reference_path = insp.initial_image_path
+        missing_message = "입사 사진을 찾을 수 없습니다."
+
+    if not reference_path:
+        raise HTTPException(status_code=400, detail=missing_message)
+
+    image_bytes = await file.read()
+
+    try:
+        result = check_capture_alignment(reference_path, image_bytes)
+    except VisionServiceError:
+        return AlignmentCheckResponse(
+            ok=False,
+            score=0.0,
+            status="poor",
+            message="구도가 조금 달라요. 다시 한 번 촬영해 주세요.",
+            hints=["move_phone"],
+        )
+
+    return AlignmentCheckResponse(
+        ok=result.ok,
+        score=result.score,
+        status=result.status,
+        message=result.message,
+        hints=result.hints,
+        good_matches=result.good_matches,
+        inlier_ratio=result.inlier_ratio,
     )
 
 

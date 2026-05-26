@@ -6,14 +6,18 @@ vision 패키지 공개 인터페이스.
 """
 from app.vision.vision_utils import (
     DiffCandidate,
+    AlignmentCheckResult,
     ImageAlignmentError,
     align_images,
+    check_alignment_quality,
     detect_difference,
 )
 
 __all__ = [
     "DiffCandidate",
+    "AlignmentCheckResult",
     "ImageAlignmentError",
     "align_images",
+    "check_alignment_quality",
     "detect_difference",
 ]

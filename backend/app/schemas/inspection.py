@@ -42,3 +42,13 @@ class InitialImageResponse(BaseModel):
     status: str
     initial_image_path: str
     initial_image_url: str | None = None
+
+
+class AlignmentCheckResponse(BaseModel):
+    ok: bool
+    score: float
+    status: str
+    message: str
+    hints: list[str] = []
+    good_matches: int | None = None
+    inlier_ratio: float | None = None

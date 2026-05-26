@@ -24,7 +24,14 @@ from app.services.storage_service import (
     load_image_bgr,
     save_ndarray,
 )
-from app.vision import DiffCandidate, ImageAlignmentError, align_images, detect_difference
+from app.vision import (
+    AlignmentCheckResult,
+    DiffCandidate,
+    ImageAlignmentError,
+    align_images,
+    check_alignment_quality,
+    detect_difference,
+)
 
 
 # ────────────────────────────────────────────────────────────
@@ -70,6 +77,29 @@ class VisionDetectionResult:
     """align_and_detect() 반환 값."""
     aligned_final_image_path: str          # DB 저장용 파일명
     issues: list[DetectedIssue] = field(default_factory=list)
+
+
+def check_capture_alignment(
+    reference_image_path: str,
+    candidate_image_bytes: bytes,
+) -> AlignmentCheckResult:
+    """Validate capture alignment without saving images or mutating inspection state."""
+    try:
+        ref_bgr = load_image_bgr(reference_image_path)
+    except Exception as exc:
+        raise VisionServiceError(
+            f"reference 이미지를 로드할 수 없습니다: {reference_image_path!r} — {exc}"
+        ) from exc
+
+    try:
+        curr_bgr = decode_image_bytes_to_bgr(candidate_image_bytes)
+    except Exception as exc:
+        raise VisionServiceError(f"candidate 이미지 디코딩 실패 — {exc}") from exc
+
+    try:
+        return check_alignment_quality(ref_bgr, curr_bgr)
+    except Exception as exc:
+        raise VisionServiceError(f"정렬 검사 실패 — {exc}") from exc
 
 
 # ────────────────────────────────────────────────────────────

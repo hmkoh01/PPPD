@@ -4,6 +4,7 @@
  */
 import type {
   AdminCreateRoomResponse,
+  AlignmentCheckResponse,
   CloseupResponse,
   FinalImageResponse,
   InitialImageResponse,
@@ -185,6 +186,19 @@ export function uploadFinalImage(
   fileOrBlob: File | Blob
 ): Promise<FinalImageResponse> {
   return apiFetch(`/api/inspections/${inspectionId}/final-image`, {
+    method: "POST",
+    body: _buildImageForm(fileOrBlob),
+  });
+}
+
+export function checkImageAlignment(
+  inspectionId: number,
+  fileOrBlob: File | Blob,
+  mode: "checkin" | "checkout",
+  preview = false,
+): Promise<AlignmentCheckResponse> {
+  const qs = `mode=${mode}${preview ? "&preview=true" : ""}`;
+  return apiFetch(`/api/inspections/${inspectionId}/alignment-check?${qs}`, {
     method: "POST",
     body: _buildImageForm(fileOrBlob),
   });

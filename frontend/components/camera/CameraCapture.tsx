@@ -14,6 +14,18 @@ export interface CameraCaptureProps {
   captureButtonLabel?: string;
   overlayImageUrl?: string;
   onCapture: (blob: Blob) => void;
+  onValidateCapture?: (blob: Blob) => Promise<{
+    ok: boolean;
+    score?: number;
+    message?: string;
+    status?: "poor" | "almost" | "good" | "locked";
+  }>;
+  onAnalyzeFrame?: (blob: Blob) => Promise<{
+    ok: boolean;
+    score?: number;
+    message?: string;
+    status?: "poor" | "almost" | "good" | "locked";
+  }>;
   onCancel?: () => void;
   compact?: boolean;
 }
@@ -40,6 +52,8 @@ export function CameraCapture({
   captureButtonLabel,
   overlayImageUrl,
   onCapture,
+  onValidateCapture,
+  onAnalyzeFrame,
   onCancel,
   compact = false,
 }: CameraCaptureProps) {
@@ -47,6 +61,7 @@ export function CameraCapture({
   const [open, setOpen] = useState(false);
   const [capturedUrl, setCapturedUrl] = useState<string | null>(null);
   const [cameraSupported, setCameraSupported] = useState(true);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   const defaults = MODE_DEFAULTS[mode];
   const displayTitle = title ?? defaults.title;
@@ -65,12 +80,27 @@ export function CameraCapture({
 
   const handleUse = (blob: Blob) => {
     if (capturedUrl) revokeObjectUrl(capturedUrl);
+    setValidationError(null);
     setCapturedUrl(blobToObjectUrl(blob));
     onCapture(blob);
   };
 
-  const handleFallbackFile = (file: File | undefined) => {
+  const handleFallbackFile = async (file: File | undefined) => {
     if (!file) return;
+    if (onValidateCapture) {
+      try {
+        const result = await onValidateCapture(file);
+        if (!result.ok) {
+          setValidationError(result.message || "구도가 조금 달라요. 다시 한 번 촬영해 주세요.");
+          if (fileInputRef.current) fileInputRef.current.value = "";
+          return;
+        }
+      } catch {
+        setValidationError("잠시 후 다시 시도해 주세요.");
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        return;
+      }
+    }
     handleUse(file);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
@@ -116,12 +146,20 @@ export function CameraCapture({
         </div>
       )}
 
+      {validationError && (
+        <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-100">
+          {validationError}
+        </div>
+      )}
+
       <FullscreenCameraModal
         open={open}
         title={displayTitle}
         overlayImageUrl={modalOverlayImageUrl}
         onClose={() => setOpen(false)}
         onUse={handleUse}
+        onValidateCapture={onValidateCapture}
+        onAnalyzeFrame={onAnalyzeFrame}
       />
     </>
   );

@@ -6,7 +6,7 @@ import { StudentShell } from "@/components/student/StudentShell";
 import { StudentStepper } from "@/components/student/StudentStepper";
 import { CameraCapture } from "@/components/camera/CameraCapture";
 import { getDormitorySession, updateDormitorySession } from "@/lib/session";
-import { uploadInitialImage } from "@/lib/api";
+import { checkImageAlignment, uploadInitialImage } from "@/lib/api";
 import { resolveImageUrl } from "@/lib/image";
 import type { DormitorySession } from "@/lib/types";
 
@@ -64,6 +64,40 @@ export default function StudentCheckinPage() {
     }
   };
 
+  const handleValidateCapture = async (blob: Blob) => {
+    if (!session.inspectionId) {
+      return { ok: false, status: "poor" as const, message: COPY.uploadErrorMissing };
+    }
+    try {
+      const res = await checkImageAlignment(session.inspectionId, blob, "checkin");
+      return {
+        ok: res.ok,
+        score: res.score,
+        status: res.status,
+        message: res.ok ? undefined : res.message,
+      };
+    } catch {
+      return {
+        ok: false,
+        status: "poor" as const,
+        message: "구도를 다시 한 번 맞춰볼게요.",
+      };
+    }
+  };
+
+  const handleAnalyzeFrame = async (blob: Blob) => {
+    if (!session.inspectionId) {
+      return { ok: false, status: "poor" as const };
+    }
+    const res = await checkImageAlignment(session.inspectionId, blob, "checkin", true);
+    return {
+      ok: res.ok,
+      score: res.score,
+      status: res.status,
+      message: res.message,
+    };
+  };
+
   return (
     <StudentShell
       title={COPY.title}
@@ -106,6 +140,8 @@ export default function StudentCheckinPage() {
           title={COPY.cameraTitle}
           description={COPY.cameraDescription}
           overlayImageUrl={refUrl ?? undefined}
+          onValidateCapture={handleValidateCapture}
+          onAnalyzeFrame={handleAnalyzeFrame}
           onCapture={handleCapture}
         />
       )}

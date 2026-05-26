@@ -6,7 +6,7 @@ import { StudentShell } from "@/components/student/StudentShell";
 import { StudentStepper } from "@/components/student/StudentStepper";
 import { CameraCapture } from "@/components/camera/CameraCapture";
 import { getDormitorySession, updateDormitorySession } from "@/lib/session";
-import { submitInspection, uploadFinalImage } from "@/lib/api";
+import { checkImageAlignment, submitInspection, uploadFinalImage } from "@/lib/api";
 import { resolveImageUrl } from "@/lib/image";
 import type { DormitorySession } from "@/lib/types";
 
@@ -75,6 +75,40 @@ export default function StudentCheckoutPage() {
     }
   };
 
+  const handleValidateCapture = async (blob: Blob) => {
+    if (!session.inspectionId) {
+      return { ok: false, status: "poor" as const, message: COPY.uploadErrorMissing };
+    }
+    try {
+      const res = await checkImageAlignment(session.inspectionId, blob, "checkout");
+      return {
+        ok: res.ok,
+        score: res.score,
+        status: res.status,
+        message: res.ok ? undefined : res.message,
+      };
+    } catch {
+      return {
+        ok: false,
+        status: "poor" as const,
+        message: "구도를 다시 한 번 맞춰볼게요.",
+      };
+    }
+  };
+
+  const handleAnalyzeFrame = async (blob: Blob) => {
+    if (!session.inspectionId) {
+      return { ok: false, status: "poor" as const };
+    }
+    const res = await checkImageAlignment(session.inspectionId, blob, "checkout", true);
+    return {
+      ok: res.ok,
+      score: res.score,
+      status: res.status,
+      message: res.message,
+    };
+  };
+
   return (
     <StudentShell
       title={COPY.title}
@@ -124,6 +158,8 @@ export default function StudentCheckoutPage() {
           title={COPY.cameraTitle}
           description={COPY.cameraDescription}
           overlayImageUrl={initUrl ?? undefined}
+          onValidateCapture={handleValidateCapture}
+          onAnalyzeFrame={handleAnalyzeFrame}
           onCapture={handleCapture}
         />
       )}
