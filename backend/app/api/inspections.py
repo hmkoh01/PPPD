@@ -153,6 +153,9 @@ async def check_image_alignment(
         hints=result.hints,
         good_matches=result.good_matches,
         inlier_ratio=result.inlier_ratio,
+        ssim_score=result.ssim_score,
+        residual_score=result.residual_score,
+        ssim_ready=result.ssim_ready,
     )
 
 

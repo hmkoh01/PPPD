@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { StudentShell } from "@/components/student/StudentShell";
 import { StudentStepper } from "@/components/student/StudentStepper";
 import { FullscreenCameraModal } from "@/components/camera/FullscreenCameraModal";
-import { getInspection, retakeIssue, submitInspection, uploadIssueCloseup } from "@/lib/api";
+import { clearIssue, getInspection, retakeIssue, submitInspection, uploadIssueCloseup } from "@/lib/api";
 import { getDormitorySession, updateDormitorySession } from "@/lib/session";
 import { resolveImageUrl } from "@/lib/image";
 import type { DormitorySession, Inspection, Issue } from "@/lib/types";
@@ -61,6 +61,7 @@ export default function StudentIssuesPage() {
   const [imageError, setImageError] = useState(false);
   const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
   const [uploadingIssueId, setUploadingIssueId] = useState<number | null>(null);
+  const [clearingIssueId, setClearingIssueId] = useState<number | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [retakingIssueId, setRetakingIssueId] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -123,10 +124,11 @@ export default function StudentIssuesPage() {
   const selectedIndex = selectedIssue ? issues.findIndex((issue) => issue.id === selectedIssue.id) : -1;
   const completedCount = issues.filter(isEvidenceSubmitted).length;
   const remainingCount = Math.max(issues.length - completedCount, 0);
-  const canSubmit = !issuesLoading && issues.length > 0 && remainingCount === 0 && !uploadingIssueId;
+  const canSubmit = !issuesLoading && issues.length > 0 && remainingCount === 0 && !uploadingIssueId && !clearingIssueId;
   const finalImageUrl = resolveImageUrl(inspection?.final_image_url);
   const canOverlay = Boolean(finalImageUrl && !imageError && naturalSize && issues.some(hasBbox));
   const selectedIsUploading = uploadingIssueId === selectedIssue?.id;
+  const selectedIsClearing = clearingIssueId === selectedIssue?.id;
   const selectedIsAnalyzing = Boolean(
     selectedIssue && (selectedIsUploading || (hasCloseup(selectedIssue) && !selectedIssue.vlm_reason)),
   );
@@ -192,6 +194,25 @@ export default function StudentIssuesPage() {
       setUploadError(err instanceof Error ? err.message : "다시 촬영을 시작하지 못했어요.");
     } finally {
       setRetakingIssueId(null);
+    }
+  };
+
+  const handleClearIssue = async () => {
+    if (!selectedIssue) return;
+
+    setClearingIssueId(selectedIssue.id);
+    setUploadError(null);
+    setSubmitError(null);
+
+    const note = notesByIssueId[selectedIssue.id] ?? "";
+
+    try {
+      const updated = await clearIssue(selectedIssue.id, note || undefined);
+      updateIssue(updated);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "처리하지 못했습니다. 다시 시도해 주세요.");
+    } finally {
+      setClearingIssueId(null);
     }
   };
 
@@ -434,21 +455,33 @@ export default function StudentIssuesPage() {
                     ref={noteInputRef}
                     value={currentNote}
                     onChange={(e) => handleNoteChange(selectedIssue.id, e.target.value)}
-                    placeholder="메모 남기기 (선택 사항) — 예) 입사 시부터 있던 자국입니다"
+                    placeholder="메모 남기기(선택 사항)"
                     className="w-full resize-none rounded-2xl bg-gray-50 px-3 py-2.5 text-sm text-gray-800 ring-1 ring-gray-200 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400"
                     rows={2}
                   />
                   {uploadError && <p className="rounded-2xl bg-red-50 px-3 py-2 text-xs text-red-700">{uploadError}</p>}
-                  <Button
-                    variant="primary"
-                    size="md"
-                    fullWidth
-                    disabled={selectedIsUploading}
-                    onClick={() => setIsCameraOpen(true)}
-                    className="h-11 rounded-2xl text-base"
-                  >
-                    가까이서 촬영하기
-                  </Button>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      variant="secondary"
+                      size="md"
+                      fullWidth
+                      disabled={selectedIsUploading || selectedIsClearing}
+                      onClick={handleClearIssue}
+                      className="h-11 rounded-2xl text-sm"
+                    >
+                      {selectedIsClearing ? "\ucc98\ub9ac \uc911..." : "\ucd2c\uc601 \uc5c6\uc774 \ub118\uae30\uae30"}
+                    </Button>
+                    <Button
+                      variant="primary"
+                      size="md"
+                      fullWidth
+                      disabled={selectedIsUploading || selectedIsClearing}
+                      onClick={() => setIsCameraOpen(true)}
+                      className="h-11 rounded-2xl text-sm"
+                    >
+                      {selectedIsUploading ? "\uc5c5\ub85c\ub4dc \uc911..." : "\ud074\ub85c\uc988\uc5c5 \ucd2c\uc601"}
+                    </Button>
+                  </div>
                 </div>
               )}
             </div>

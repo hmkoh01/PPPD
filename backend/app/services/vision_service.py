@@ -295,7 +295,8 @@ def align_and_detect(
 
     # ── 4. SSIM 전후 차이 후보 검출 ─────────────────────────
     try:
-        candidates = detect_difference(ref_bgr, aligned_bgr)
+        debug_prefix = f"inspection_{inspection_id}" if inspection_id is not None else "inspection_unknown"
+        candidates = detect_difference(ref_bgr, aligned_bgr, debug_prefix=debug_prefix)
     except Exception as exc:
         raise VisionDetectionFailed(
             f"차이 후보 검출 중 오류가 발생했습니다: {exc}"

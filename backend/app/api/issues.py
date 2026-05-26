@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.core.constants import ImageType, IssueStatus
 from app.db.database import get_db
-from app.schemas.issue import CloseupUploadResponse, IssueOut
+from app.schemas.issue import CloseupUploadResponse, IssueClearRequest, IssueOut
 from app.services.gemini_service import GeminiConfigError, analyze_closeup_async
 from app.services.inspection_service import get_issue_or_404, issue_to_schema
 from app.services.storage_service import get_public_image_url, save_upload_file
@@ -94,6 +94,28 @@ async def upload_closeup(
         result=result_str,
         reason=reason_str,
     )
+
+
+@router.patch(
+    "/{issue_id}/clear",
+    response_model=IssueOut,
+    summary="오탐 또는 추가 촬영 불필요 처리",
+)
+def clear_issue(
+    issue_id: int,
+    payload: IssueClearRequest | None = None,
+    db: Session = Depends(get_db),
+) -> Any:
+    """학생이 해당 후보를 오탐/추가 촬영 불필요로 표시합니다."""
+    issue = get_issue_or_404(db, issue_id)
+    note = payload.student_note.strip() if payload and payload.student_note else None
+    issue.status = IssueStatus.CLEARED
+    issue.student_note = note
+    issue.closeup_image_path = None
+    issue.vlm_reason = "학생이 오탐 또는 추가 촬영 불필요로 표시했습니다."
+    db.commit()
+    db.refresh(issue)
+    return issue_to_schema(issue)
 
 
 @router.patch(

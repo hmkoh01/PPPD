@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { StudentShell } from "@/components/student/StudentShell";
 import { StudentStepper } from "@/components/student/StudentStepper";
 import { CameraCapture } from "@/components/camera/CameraCapture";
+import { ImageLightbox } from "@/components/ui/ImageLightbox";
 import { getDormitorySession, updateDormitorySession } from "@/lib/session";
 import { checkImageAlignment, submitInspection, uploadFinalImage } from "@/lib/api";
 import { resolveImageUrl } from "@/lib/image";
@@ -34,6 +35,7 @@ export default function StudentCheckoutPage() {
   const router = useRouter();
   const [session, setSession] = useState<DormitorySession | null>(null);
   const [initImgErr, setInitImgErr] = useState(false);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
@@ -85,6 +87,7 @@ export default function StudentCheckoutPage() {
         ok: res.ok,
         score: res.score,
         status: res.status,
+        ssimReady: res.ssim_ready,
         message: res.ok ? undefined : res.message,
       };
     } catch {
@@ -105,6 +108,7 @@ export default function StudentCheckoutPage() {
       ok: res.ok,
       score: res.score,
       status: res.status,
+      ssimReady: res.ssim_ready,
       message: res.message,
     };
   };
@@ -133,13 +137,15 @@ export default function StudentCheckoutPage() {
           <span>{COPY.reference}</span>
         </div>
         {initUrl && !initImgErr ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={initUrl}
-            alt={COPY.referenceAlt}
-            onError={() => setInitImgErr(true)}
-            className="aspect-[16/9] max-h-44 w-full rounded-[20px] bg-gray-100 object-cover ring-1 ring-gray-100"
-          />
+          <button type="button" className="block w-full" onClick={() => setLightboxOpen(true)}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={initUrl}
+              alt={COPY.referenceAlt}
+              onError={() => setInitImgErr(true)}
+              className="aspect-[16/9] max-h-44 w-full rounded-[20px] bg-gray-100 object-cover ring-1 ring-gray-100"
+            />
+          </button>
         ) : (
           <div className="flex aspect-[16/9] max-h-44 items-center justify-center rounded-[20px] bg-gray-100 text-sm text-gray-400">
             {COPY.referenceFallback}
@@ -169,6 +175,13 @@ export default function StudentCheckoutPage() {
           {uploadError}
         </div>
       )}
+
+      <ImageLightbox
+        open={lightboxOpen}
+        src={initUrl}
+        alt={COPY.referenceAlt}
+        onClose={() => setLightboxOpen(false)}
+      />
     </StudentShell>
   );
 }

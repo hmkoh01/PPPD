@@ -19,11 +19,13 @@ interface FullscreenCameraModalProps {
     ok: boolean;
     message?: string;
     status?: AlignmentStatus;
+    ssimReady?: boolean;
   }>;
   onAnalyzeFrame?: (blob: Blob) => Promise<{
     ok: boolean;
     message?: string;
     status?: AlignmentStatus;
+    ssimReady?: boolean;
   }>;
 }
 
@@ -46,9 +48,11 @@ const TEXT = {
 };
 
 const FRAME_ANALYSIS_INTERVAL_MS = 850;
+const FRAME_ANALYSIS_COUNTDOWN_INTERVAL_MS = 260;
 const FRAME_ANALYSIS_LONG_SIDE = 560;
 const AUTO_CAPTURE_LOCK_HOLD_MS = 1000;
 const AUTO_CAPTURE_COUNTDOWN_SECONDS = 2;
+const LOCKED_STATUS_MAX_AGE_MS = 1400;
 const REAR_CAMERA_KEYWORDS = ["back", "rear", "environment", "후면", "뒤"];
 const ULTRA_WIDE_CAMERA_KEYWORDS = ["ultra wide", "ultrawide", "ultra-wide", "0.5", "0,5", "초광각"];
 
@@ -90,7 +94,7 @@ function toAnalysisBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
 
 function smoothedStatus(history: AlignmentStatus[]): AlignmentStatus {
   const latest = history.at(-1) ?? "poor";
-  if (history.filter((status) => status === "locked").length >= 2) return "locked";
+  if (latest === "locked" && history.filter((status) => status === "locked").length >= 2) return "locked";
   if (history.filter((status) => status === "good").length >= 2) return "good";
   if (history.filter((status) => status === "poor").length >= 2) return "poor";
   if (history.includes("almost") || history.includes("good") || history.includes("locked")) return "almost";
@@ -115,8 +119,11 @@ export function FullscreenCameraModal({
   const analyzingFrameRef = useRef(false);
   const statusHistoryRef = useRef<AlignmentStatus[]>([]);
   const lockedSinceRef = useRef<number | null>(null);
+  const lastLockedFrameAtRef = useRef<number | null>(null);
+  const overlayStatusRef = useRef<OverlayStatus>("idle");
   const autoCaptureInProgressRef = useRef(false);
   const countdownActiveRef = useRef(false);
+  const countdownRunIdRef = useRef(0);
 
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -126,6 +133,7 @@ export function FullscreenCameraModal({
   const [autoCountdown, setAutoCountdown] = useState<number | null>(null);
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
+  const [capturingFrame, setCapturingFrame] = useState(false);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -143,6 +151,7 @@ export function FullscreenCameraModal({
     previewUrlRef.current = null;
     setPreviewUrl(null);
     capturedBlobRef.current = null;
+    setCapturingFrame(false);
     setValidationMessage(null);
     setValidating(false);
   }, []);
@@ -151,11 +160,20 @@ export function FullscreenCameraModal({
     analyzingFrameRef.current = false;
     statusHistoryRef.current = [];
     lockedSinceRef.current = null;
+    lastLockedFrameAtRef.current = null;
     autoCaptureInProgressRef.current = false;
     countdownActiveRef.current = false;
+    countdownRunIdRef.current += 1;
+    overlayStatusRef.current = "idle";
     setOverlayStatus("idle");
     setLiveHint(TEXT.alignIdle);
     setAutoCountdown(null);
+    setCapturingFrame(false);
+  }, []);
+
+  const applyOverlayStatus = useCallback((status: OverlayStatus) => {
+    overlayStatusRef.current = status;
+    setOverlayStatus(status);
   }, []);
 
   const startCamera = useCallback(async () => {
@@ -235,17 +253,23 @@ export function FullscreenCameraModal({
     canvas.width = width;
     canvas.height = height;
     canvas.getContext("2d")?.drawImage(video, 0, 0, width, height);
+    setCapturingFrame(true);
+    setLiveHint(TEXT.capturing);
+    stopCamera();
 
     canvas.toBlob(
       (blob) => {
-        if (!blob || previewUrlRef.current) return;
-        stopCamera();
+        if (!blob || previewUrlRef.current) {
+          setCapturingFrame(false);
+          return;
+        }
         if (previewUrlRef.current) revokeObjectUrl(previewUrlRef.current);
         capturedBlobRef.current = blob;
         const url = blobToObjectUrl(blob);
         previewUrlRef.current = url;
         setPreviewUrl(url);
         setAutoCountdown(null);
+        setCapturingFrame(false);
         setLiveHint(TEXT.capturing);
       },
       "image/jpeg",
@@ -284,14 +308,18 @@ export function FullscreenCameraModal({
         const result = await onAnalyzeFrame(blob);
         if (cancelled) return;
 
-        const nextStatus = result.status ?? (result.ok ? "good" : "poor");
+        const rawStatus = result.status ?? (result.ok ? "good" : "poor");
+        const nextStatus: AlignmentStatus =
+          rawStatus === "locked" && (!result.ok || result.ssimReady === false) ? "good" : rawStatus;
         if (countdownActiveRef.current && nextStatus !== "locked") {
+          countdownRunIdRef.current += 1;
           statusHistoryRef.current = [nextStatus];
           lockedSinceRef.current = null;
+          lastLockedFrameAtRef.current = null;
           autoCaptureInProgressRef.current = false;
           countdownActiveRef.current = false;
           setAutoCountdown(null);
-          setOverlayStatus(nextStatus);
+          applyOverlayStatus(nextStatus);
           if (nextStatus === "good") {
             setLiveHint(TEXT.alignGood);
           } else if (nextStatus === "almost") {
@@ -308,11 +336,13 @@ export function FullscreenCameraModal({
         const now = Date.now();
         if (displayStatus === "locked") {
           if (!lockedSinceRef.current) lockedSinceRef.current = now;
+          lastLockedFrameAtRef.current = now;
         } else {
           lockedSinceRef.current = null;
+          lastLockedFrameAtRef.current = null;
         }
 
-        setOverlayStatus(displayStatus);
+        applyOverlayStatus(displayStatus);
 
         if (displayStatus === "locked") {
           setLiveHint(TEXT.alignLocked);
@@ -327,7 +357,8 @@ export function FullscreenCameraModal({
         if (!cancelled) {
           statusHistoryRef.current = [];
           lockedSinceRef.current = null;
-          setOverlayStatus("idle");
+          lastLockedFrameAtRef.current = null;
+          applyOverlayStatus("idle");
           setAutoCountdown(null);
           countdownActiveRef.current = false;
           setLiveHint(TEXT.alignIdle);
@@ -340,54 +371,84 @@ export function FullscreenCameraModal({
     void analyzeCurrentFrame();
     const id = window.setInterval(() => {
       void analyzeCurrentFrame();
-    }, FRAME_ANALYSIS_INTERVAL_MS);
+    }, countdownActiveRef.current ? FRAME_ANALYSIS_COUNTDOWN_INTERVAL_MS : FRAME_ANALYSIS_INTERVAL_MS);
 
     return () => {
       cancelled = true;
       window.clearInterval(id);
       analyzingFrameRef.current = false;
     };
-  }, [cameraError, cameraReady, onAnalyzeFrame, open, overlayImageUrl, previewUrl]);
+  }, [applyOverlayStatus, cameraError, cameraReady, onAnalyzeFrame, open, overlayImageUrl, previewUrl]);
 
   useEffect(() => {
     if (!open || !cameraReady || previewUrl || cameraError || overlayStatus !== "locked") {
       setAutoCountdown(null);
       autoCaptureInProgressRef.current = false;
+      countdownActiveRef.current = false;
+      countdownRunIdRef.current += 1;
       return;
     }
 
-    let countdownId: number | undefined;
     let captureId: number | undefined;
+    let tickId: number | undefined;
+    const runId = countdownRunIdRef.current + 1;
+    countdownRunIdRef.current = runId;
     const lockedAt = lockedSinceRef.current ?? Date.now();
     const holdRemaining = Math.max(AUTO_CAPTURE_LOCK_HOLD_MS - (Date.now() - lockedAt), 0);
 
     const holdId = window.setTimeout(() => {
-      if (autoCaptureInProgressRef.current) return;
+      if (countdownRunIdRef.current !== runId || autoCaptureInProgressRef.current || overlayStatusRef.current !== "locked") return;
       countdownActiveRef.current = true;
       setAutoCountdown(AUTO_CAPTURE_COUNTDOWN_SECONDS);
 
       let remaining = AUTO_CAPTURE_COUNTDOWN_SECONDS;
-      countdownId = window.setInterval(() => {
+      const tick = () => {
+        if (countdownRunIdRef.current !== runId || previewUrlRef.current) return;
         remaining -= 1;
         if (remaining > 0) {
           setAutoCountdown(remaining);
+          tickId = window.setTimeout(() => {
+            tick();
+          }, 1000);
           return;
         }
 
-        if (countdownId) window.clearInterval(countdownId);
-        setLiveHint(TEXT.capturing);
-        setAutoCountdown(null);
-        countdownActiveRef.current = false;
         autoCaptureInProgressRef.current = true;
+        if (countdownRunIdRef.current !== runId || previewUrlRef.current) return;
+        const lockedFresh =
+          overlayStatusRef.current === "locked" &&
+          lastLockedFrameAtRef.current !== null &&
+          Date.now() - lastLockedFrameAtRef.current <= LOCKED_STATUS_MAX_AGE_MS;
+        if (!lockedFresh) {
+          statusHistoryRef.current = [];
+          lockedSinceRef.current = null;
+          lastLockedFrameAtRef.current = null;
+          countdownActiveRef.current = false;
+          autoCaptureInProgressRef.current = false;
+          countdownRunIdRef.current += 1;
+          applyOverlayStatus("good");
+          setLiveHint(TEXT.alignGood);
+          setAutoCountdown(null);
+          return;
+        }
+        setLiveHint(TEXT.capturing);
+        setAutoCountdown(0);
+        countdownActiveRef.current = false;
         captureId = window.setTimeout(() => {
+          if (countdownRunIdRef.current !== runId || previewUrlRef.current) return;
           captureFrame();
         }, 180);
+      };
+
+      tickId = window.setTimeout(() => {
+        tick();
       }, 1000);
     }, holdRemaining);
 
     return () => {
+      countdownRunIdRef.current += 1;
       window.clearTimeout(holdId);
-      if (countdownId) window.clearInterval(countdownId);
+      if (tickId) window.clearTimeout(tickId);
       if (captureId) window.clearTimeout(captureId);
       if (!previewUrlRef.current) {
         setAutoCountdown(null);
@@ -395,7 +456,7 @@ export function FullscreenCameraModal({
         autoCaptureInProgressRef.current = false;
       }
     };
-  }, [cameraError, cameraReady, captureFrame, open, overlayStatus, previewUrl]);
+  }, [applyOverlayStatus, cameraError, cameraReady, captureFrame, open, overlayStatus, previewUrl]);
 
   if (!open || !mounted) return null;
 
@@ -428,9 +489,10 @@ export function FullscreenCameraModal({
       setValidationMessage(null);
       try {
         const result = await onValidateCapture(blob);
-        setOverlayStatus(result.status ?? (result.ok ? "good" : "poor"));
+        const nextStatus = result.status ?? (result.ok ? "locked" : "poor");
+        applyOverlayStatus(nextStatus);
         if (!result.ok) {
-          setValidationMessage(result.message || TEXT.retakeHint);
+          setValidationMessage(TEXT.retakeHint);
           setValidating(false);
           return;
         }
@@ -446,7 +508,11 @@ export function FullscreenCameraModal({
     onClose();
   };
 
-  const displayedHint = autoCountdown ? `${TEXT.capturing} ${autoCountdown}` : liveHint;
+  const displayedHint = autoCountdown !== null
+    ? autoCountdown > 0
+      ? `${TEXT.capturing} ${autoCountdown}`
+      : TEXT.capturing
+    : liveHint;
   const requiresAlignment = Boolean(overlayImageUrl && onAnalyzeFrame);
   const canManualCapture = cameraReady && (!requiresAlignment || overlayStatus === "locked");
 
@@ -483,6 +549,13 @@ export function FullscreenCameraModal({
       {!cameraReady && !cameraError && !previewUrl && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/40">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+        </div>
+      )}
+
+      {capturingFrame && !previewUrl && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black/80">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+          <p className="text-sm font-semibold text-white">{TEXT.capturing}</p>
         </div>
       )}
 

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Inspection, Issue, Room } from "@/lib/types";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { ImageLightbox } from "@/components/ui/ImageLightbox";
 import { getStatusLabel, getStatusTone, getIssueStatusLabel, getIssueStatusTone } from "@/lib/status";
 import { resolveImageUrl } from "@/lib/image";
 
@@ -24,18 +25,29 @@ function InspectionImage({
   label: string;
 }) {
   const [err, setErr] = useState(false);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
   const imageUrl = resolveImageUrl(url);
   return (
     <div className="space-y-2">
       <p className="text-xs font-medium text-gray-500">{label}</p>
       {imageUrl && !err ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={imageUrl}
-          alt={label}
-          onError={() => setErr(true)}
-          className="aspect-video w-full rounded-[18px] bg-gray-100 object-cover"
-        />
+        <>
+          <button type="button" className="block w-full" onClick={() => setLightboxOpen(true)}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={imageUrl}
+              alt={label}
+              onError={() => setErr(true)}
+              className="aspect-video w-full rounded-[18px] bg-gray-100 object-cover"
+            />
+          </button>
+          <ImageLightbox
+            open={lightboxOpen}
+            src={imageUrl}
+            alt={label}
+            onClose={() => setLightboxOpen(false)}
+          />
+        </>
       ) : (
         <div className="flex aspect-video w-full items-center justify-center rounded-[18px] bg-gray-100 text-sm text-gray-400">
           사진 없음
@@ -175,6 +187,7 @@ function VlmSummary({ reason }: { reason: string }) {
 function IssueDetail({ issue, index }: { issue: Issue; index: number }) {
   const [cropErr, setCropErr] = useState(false);
   const [closeupErr, setCloseupErr] = useState(false);
+  const [closeupLightboxOpen, setCloseupLightboxOpen] = useState(false);
   const cropUrl = resolveImageUrl(issue.crop_image_url);
   const closeupUrl = resolveImageUrl(issue.closeup_image_url);
   const reviewState = getReviewState(issue);
@@ -205,13 +218,23 @@ function IssueDetail({ issue, index }: { issue: Issue; index: number }) {
         <div className="space-y-1">
           <p className="text-[10px] font-bold text-gray-500">학생 근접 확인 사진</p>
           {closeupUrl && !closeupErr ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={closeupUrl}
-              alt="학생이 제출한 근접 확인 사진"
-              onError={() => setCloseupErr(true)}
-              className="aspect-square w-full rounded-xl bg-gray-100 object-cover"
-            />
+            <>
+              <button type="button" className="block w-full" onClick={() => setCloseupLightboxOpen(true)}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={closeupUrl}
+                  alt="학생 클로즈업 사진"
+                  onError={() => setCloseupErr(true)}
+                  className="aspect-square w-full rounded-xl bg-gray-100 object-cover"
+                />
+              </button>
+              <ImageLightbox
+                open={closeupLightboxOpen}
+                src={closeupUrl}
+                alt="학생 클로즈업 사진"
+                onClose={() => setCloseupLightboxOpen(false)}
+              />
+            </>
           ) : (
             <div className="flex aspect-square w-full items-center justify-center rounded-xl bg-gray-100 text-[10px] text-gray-400">
               미제출

@@ -19,12 +19,14 @@ export interface CameraCaptureProps {
     score?: number;
     message?: string;
     status?: "poor" | "almost" | "good" | "locked";
+    ssimReady?: boolean;
   }>;
   onAnalyzeFrame?: (blob: Blob) => Promise<{
     ok: boolean;
     score?: number;
     message?: string;
     status?: "poor" | "almost" | "good" | "locked";
+    ssimReady?: boolean;
   }>;
   onCancel?: () => void;
   compact?: boolean;

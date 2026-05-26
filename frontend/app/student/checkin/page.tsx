@@ -5,8 +5,9 @@ import { useRouter } from "next/navigation";
 import { StudentShell } from "@/components/student/StudentShell";
 import { StudentStepper } from "@/components/student/StudentStepper";
 import { CameraCapture } from "@/components/camera/CameraCapture";
+import { ImageLightbox } from "@/components/ui/ImageLightbox";
 import { getDormitorySession, updateDormitorySession } from "@/lib/session";
-import { checkImageAlignment, uploadInitialImage } from "@/lib/api";
+import { uploadInitialImage } from "@/lib/api";
 import { resolveImageUrl } from "@/lib/image";
 import type { DormitorySession } from "@/lib/types";
 
@@ -28,6 +29,7 @@ export default function StudentCheckinPage() {
   const router = useRouter();
   const [session, setSession] = useState<DormitorySession | null>(null);
   const [refImgErr, setRefImgErr] = useState(false);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
@@ -64,39 +66,6 @@ export default function StudentCheckinPage() {
     }
   };
 
-  const handleValidateCapture = async (blob: Blob) => {
-    if (!session.inspectionId) {
-      return { ok: false, status: "poor" as const, message: COPY.uploadErrorMissing };
-    }
-    try {
-      const res = await checkImageAlignment(session.inspectionId, blob, "checkin");
-      return {
-        ok: res.ok,
-        score: res.score,
-        status: res.status,
-        message: res.ok ? undefined : res.message,
-      };
-    } catch {
-      return {
-        ok: false,
-        status: "poor" as const,
-        message: "구도를 다시 한 번 맞춰볼게요.",
-      };
-    }
-  };
-
-  const handleAnalyzeFrame = async (blob: Blob) => {
-    if (!session.inspectionId) {
-      return { ok: false, status: "poor" as const };
-    }
-    const res = await checkImageAlignment(session.inspectionId, blob, "checkin", true);
-    return {
-      ok: res.ok,
-      score: res.score,
-      status: res.status,
-      message: res.message,
-    };
-  };
 
   return (
     <StudentShell
@@ -115,13 +84,15 @@ export default function StudentCheckinPage() {
           <span>{COPY.reference}</span>
         </div>
         {refUrl && !refImgErr ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={refUrl}
-            alt={COPY.referenceAlt}
-            onError={() => setRefImgErr(true)}
-            className="aspect-[16/9] max-h-44 w-full rounded-[20px] bg-gray-100 object-cover ring-1 ring-gray-100"
-          />
+          <button type="button" className="block w-full" onClick={() => setLightboxOpen(true)}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={refUrl}
+              alt={COPY.referenceAlt}
+              onError={() => setRefImgErr(true)}
+              className="aspect-[16/9] max-h-44 w-full rounded-[20px] bg-gray-100 object-cover ring-1 ring-gray-100"
+            />
+          </button>
         ) : (
           <div className="flex aspect-[16/9] max-h-44 items-center justify-center rounded-[20px] bg-gray-100 text-sm text-gray-400">
             {COPY.referenceFallback}
@@ -140,8 +111,6 @@ export default function StudentCheckinPage() {
           title={COPY.cameraTitle}
           description={COPY.cameraDescription}
           overlayImageUrl={refUrl ?? undefined}
-          onValidateCapture={handleValidateCapture}
-          onAnalyzeFrame={handleAnalyzeFrame}
           onCapture={handleCapture}
         />
       )}
@@ -151,6 +120,13 @@ export default function StudentCheckinPage() {
           {uploadError}
         </div>
       )}
+
+      <ImageLightbox
+        open={lightboxOpen}
+        src={refUrl}
+        alt={COPY.referenceAlt}
+        onClose={() => setLightboxOpen(false)}
+      />
     </StudentShell>
   );
 }

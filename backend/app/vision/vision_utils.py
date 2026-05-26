@@ -40,10 +40,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
+import uuid
 
 import cv2
 import numpy as np
 from skimage.metrics import structural_similarity as ssim
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -56,16 +60,18 @@ MAX_CANDIDATES: int = 3
 
 # score 기준 이하 후보는 표시하지 않음 (0.0~1.0)
 # 손상 누락 시 낮추고, 오탐 과다 시 높임
-DISPLAY_SCORE_THRESHOLD: float = 0.45
+DISPLAY_SCORE_THRESHOLD: float = 0.50
 
 # Hard filter: 이보다 큰 aspect_ratio 는 즉시 제거
 ASPECT_RATIO_HARD_LIMIT: float = 8.0
 
 # Hard filter: 이보다 작은 fill_ratio 는 즉시 제거
-FILL_RATIO_MIN: float = 0.15
+FILL_RATIO_MIN: float = 0.18
 
 # Hard filter: 이보다 작은 mean_diff 는 즉시 제거
-MEAN_DIFF_MIN: float = 20.0
+MEAN_DIFF_MIN: float = 24.0
+GRADIENT_RESIDUAL_MIN: float = 14.0
+CHROMA_DELTA_MIN: float = 8.0
 
 # 이미지 면적 대비 동적 최소/최대 면적 비율 (small_damage 기준)
 IMAGE_AREA_MIN_RATIO: float = 0.002   # image_area * 0.002 (최소 1500 px²)
@@ -80,20 +86,28 @@ LARGE_OBJECT_MAX_AREA_RATIO: float = 0.60   # 60% 초과 → recapture_recommend
 DETECTION_PROFILE: str = "auto"
 
 # 이미지 가장자리 margin 비율 (이 범위 안에 있으면 감점)
-EDGE_MARGIN_RATIO: float = 0.05
+EDGE_MARGIN_RATIO: float = 0.10
+LARGE_OBJECT_MIN_EDGE_CHANGE: float = 16.0
+LARGE_OBJECT_MIN_GRADIENT_RESIDUAL: float = 28.0
+SMALL_DAMAGE_MIN_GRADIENT_RESIDUAL: float = 68.0
 
 # ORB 매칭·RANSAC 에 필요한 최소 좋은 매칭 개수
 _MIN_GOOD_MATCHES = 15
 
-ALIGNMENT_LOCKED_THRESHOLD: float = 0.86
+ALIGNMENT_LOCKED_THRESHOLD: float = 0.76
 ALIGNMENT_GOOD_THRESHOLD: float = 0.78
 ALIGNMENT_ALMOST_THRESHOLD: float = 0.64
 ALIGNMENT_TARGET_MATCHES: int = 65
-ALIGNMENT_LOCKED_MIN_INLIER_RATIO: float = 0.72
-ALIGNMENT_LOCKED_MAX_BORDER_RATIO: float = 0.08
-ALIGNMENT_LOCKED_MIN_SHAPE_SCORE: float = 0.78
-ALIGNMENT_LOCKED_MIN_SIMILARITY_SCORE: float = 0.72
+ALIGNMENT_LOCKED_MIN_INLIER_RATIO: float = 0.60
+ALIGNMENT_LOCKED_MAX_BORDER_RATIO: float = 0.145
+ALIGNMENT_LOCKED_MIN_SHAPE_SCORE: float = 0.66
+ALIGNMENT_LOCKED_MIN_SIMILARITY_SCORE: float = 0.60
+ALIGNMENT_LOCKED_MIN_SSIM_RAW: float = 0.64
+ALIGNMENT_LOCKED_MIN_RESIDUAL_SCORE: float = 0.49
 ALIGNMENT_MAX_BORDER_RATIO: float = 0.14
+ALIGNMENT_GRADIENT_RESIDUAL_MAX: float = 47.0
+ALIGNMENT_EDGE_RESIDUAL_MAX: float = 71.0
+DIFF_DEBUG_IMAGES_ENABLED: bool = True
 
 
 # ────────────────────────────────────────────────────────────
@@ -138,6 +152,9 @@ class AlignmentCheckResult:
     hints: list[str]
     good_matches: int | None = None
     inlier_ratio: float | None = None
+    ssim_score: float | None = None
+    residual_score: float | None = None
+    ssim_ready: bool = False
 
 
 # ────────────────────────────────────────────────────────────
@@ -263,6 +280,98 @@ def _homography_shape_penalty(H: np.ndarray) -> float:
     return min(max(skew - 1.0, 0.0) / 1.2, 1.0)
 
 
+def _normalize_brightness_color(reference_bgr: np.ndarray, candidate_bgr: np.ndarray) -> np.ndarray:
+    """Match candidate LAB channel statistics to the reference before SSIM."""
+    ref_lab = cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    cand_lab = cv2.cvtColor(candidate_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    normalized = cand_lab.copy()
+
+    for channel in range(3):
+        ref_channel = ref_lab[:, :, channel]
+        cand_channel = cand_lab[:, :, channel]
+        ref_mean, ref_std = cv2.meanStdDev(ref_channel)
+        cand_mean, cand_std = cv2.meanStdDev(cand_channel)
+        ref_mean_f = float(ref_mean[0][0])
+        ref_std_f = max(float(ref_std[0][0]), 1.0)
+        cand_mean_f = float(cand_mean[0][0])
+        cand_std_f = max(float(cand_std[0][0]), 1.0)
+        normalized[:, :, channel] = ((cand_channel - cand_mean_f) * (ref_std_f / cand_std_f)) + ref_mean_f
+
+    normalized = np.clip(normalized, 0, 255).astype(np.uint8)
+    return cv2.cvtColor(normalized, cv2.COLOR_LAB2BGR)
+
+
+def _gradient_magnitude(gray: np.ndarray) -> np.ndarray:
+    gray_f = gray.astype(np.float32)
+    grad_x = cv2.Sobel(gray_f, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray_f, cv2.CV_32F, 0, 1, ksize=3)
+    return cv2.magnitude(grad_x, grad_y)
+
+
+def _alignment_residual_scores(ref_gray: np.ndarray, aligned_gray: np.ndarray) -> tuple[float, float, float]:
+    ref_grad = _gradient_magnitude(ref_gray)
+    aligned_grad = _gradient_magnitude(aligned_gray)
+    gradient_residual = float(np.mean(cv2.absdiff(ref_grad, aligned_grad)))
+    gradient_score = 1.0 - min(gradient_residual / ALIGNMENT_GRADIENT_RESIDUAL_MAX, 1.0)
+
+    ref_edges = cv2.Canny(ref_gray, 50, 150)
+    aligned_edges = cv2.Canny(aligned_gray, 50, 150)
+    edge_residual = float(np.mean(cv2.absdiff(ref_edges, aligned_edges)))
+    edge_score = 1.0 - min(edge_residual / ALIGNMENT_EDGE_RESIDUAL_MAX, 1.0)
+
+    residual_score = float(np.clip((gradient_score * 0.6) + (edge_score * 0.4), 0.0, 1.0))
+    return residual_score, gradient_residual, edge_residual
+
+
+def _save_diff_debug_image(
+    debug_prefix: str | None,
+    case: str,
+    ref_img: np.ndarray,
+    curr_img: np.ndarray,
+    diff_u8: np.ndarray,
+    binary: np.ndarray,
+    box: tuple[int, int, int, int] | None = None,
+    note: str = "",
+) -> None:
+    if not DIFF_DEBUG_IMAGES_ENABLED or not debug_prefix:
+        return
+    try:
+        storage_dir = settings.image_storage_path
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        debug_dir = storage_dir / "vision_debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+
+        ref_vis = ref_img.copy()
+        curr_vis = curr_img.copy()
+        if box is not None:
+            x, y, w, h = box
+            cv2.rectangle(ref_vis, (x, y), (x + w, y + h), (0, 180, 255), 3)
+            cv2.rectangle(curr_vis, (x, y), (x + w, y + h), (0, 180, 255), 3)
+
+        diff_vis = cv2.cvtColor(diff_u8, cv2.COLOR_GRAY2BGR)
+        binary_vis = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+        panels = [ref_vis, curr_vis, diff_vis, binary_vis]
+        target_h = 260
+        resized: list[np.ndarray] = []
+        for panel in panels:
+            scale = target_h / max(panel.shape[0], 1)
+            resized.append(cv2.resize(panel, (max(1, int(panel.shape[1] * scale)), target_h)))
+        sheet = cv2.hconcat(resized)
+        label = f"{case} {note}"[:160]
+        cv2.rectangle(sheet, (0, 0), (sheet.shape[1], 28), (0, 0, 0), -1)
+        cv2.putText(sheet, label, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+
+        safe_case = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in case)[:60]
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{debug_prefix}_{safe_case}_{ts}_{uuid.uuid4().hex[:6]}.jpg"
+        encoded, data = cv2.imencode(".jpg", sheet, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+        if encoded:
+            with open(debug_dir / filename, "wb") as f:
+                f.write(data.tobytes())
+    except Exception:
+        logger.debug("failed to save diff debug image", exc_info=True)
+
+
 def check_alignment_quality(ref_img: np.ndarray, curr_img: np.ndarray) -> AlignmentCheckResult:
     """
     Estimate whether the current capture is close enough to the reference.
@@ -342,12 +451,14 @@ def check_alignment_quality(ref_img: np.ndarray, curr_img: np.ndarray) -> Alignm
     inlier_ratio = float(mask.ravel().sum()) / max(good_matches, 1)
     h, w = ref_img.shape[:2]
     aligned = cv2.warpPerspective(curr_img, H, (w, h))
+    normalized_aligned = _normalize_brightness_color(ref_img, aligned)
 
-    aligned_gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
+    aligned_gray = cv2.cvtColor(normalized_aligned, cv2.COLOR_BGR2GRAY)
     ref_blur = cv2.GaussianBlur(ref_gray, (15, 15), 0)
     aligned_blur = cv2.GaussianBlur(aligned_gray, (15, 15), 0)
     similarity, _ = ssim(ref_blur, aligned_blur, win_size=21, data_range=255, full=True)
     similarity_score = float(np.clip((similarity - 0.35) / 0.45, 0.0, 1.0))
+    residual_score, gradient_residual, edge_residual = _alignment_residual_scores(ref_gray, aligned_gray)
 
     source_mask = np.full(curr_gray.shape, 255, dtype=np.uint8)
     warped_mask = cv2.warpPerspective(source_mask, H, (w, h))
@@ -361,18 +472,26 @@ def check_alignment_quality(ref_img: np.ndarray, curr_img: np.ndarray) -> Alignm
     score = (
         match_score * 0.25
         + inlier_score * 0.25
-        + similarity_score * 0.30
+        + similarity_score * 0.22
+        + residual_score * 0.08
         + border_score * 0.12
         + shape_score * 0.08
     )
     score = round(float(np.clip(score, 0.0, 1.0)), 3)
 
+    ssim_ready = (
+        similarity >= ALIGNMENT_LOCKED_MIN_SSIM_RAW
+        and residual_score >= ALIGNMENT_LOCKED_MIN_RESIDUAL_SCORE
+        and gradient_residual <= ALIGNMENT_GRADIENT_RESIDUAL_MAX
+        and edge_residual <= ALIGNMENT_EDGE_RESIDUAL_MAX
+    )
     locked = (
         score >= ALIGNMENT_LOCKED_THRESHOLD
         and inlier_ratio >= ALIGNMENT_LOCKED_MIN_INLIER_RATIO
         and border_ratio <= ALIGNMENT_LOCKED_MAX_BORDER_RATIO
         and shape_score >= ALIGNMENT_LOCKED_MIN_SHAPE_SCORE
         and similarity_score >= ALIGNMENT_LOCKED_MIN_SIMILARITY_SCORE
+        and ssim_ready
     )
 
     if locked:
@@ -390,6 +509,8 @@ def check_alignment_quality(ref_img: np.ndarray, curr_img: np.ndarray) -> Alignm
             hints.append("move_closer")
         if shape_score < ALIGNMENT_LOCKED_MIN_SHAPE_SCORE:
             hints.append("reduce_tilt")
+        if not ssim_ready:
+            hints.append("align_edges")
         if not hints:
             hints.append("move_phone")
 
@@ -401,6 +522,9 @@ def check_alignment_quality(ref_img: np.ndarray, curr_img: np.ndarray) -> Alignm
         hints=hints,
         good_matches=good_matches,
         inlier_ratio=round(inlier_ratio, 3),
+        ssim_score=round(float(similarity), 3),
+        residual_score=round(residual_score, 3),
+        ssim_ready=ssim_ready,
     )
 
 
@@ -411,6 +535,7 @@ def check_alignment_quality(ref_img: np.ndarray, curr_img: np.ndarray) -> Alignm
 def detect_difference(
     ref_img: np.ndarray,
     aligned_curr_img: np.ndarray,
+    debug_prefix: str | None = None,
 ) -> list[DiffCandidate]:
     """
     정합된 두 이미지 간의 SSIM 전후 차이 후보를 검출합니다.
@@ -458,7 +583,8 @@ def detect_difference(
     # raw: edge/brightness 계산용 (비블러)
     # blurred: SSIM 계산용
     gray_ref_raw  = cv2.cvtColor(ref_img,          cv2.COLOR_BGR2GRAY)
-    gray_curr_raw = cv2.cvtColor(aligned_curr_img, cv2.COLOR_BGR2GRAY)
+    normalized_curr_img = _normalize_brightness_color(ref_img, aligned_curr_img)
+    gray_curr_raw = cv2.cvtColor(normalized_curr_img, cv2.COLOR_BGR2GRAY)
 
     gray_ref_blur  = cv2.GaussianBlur(gray_ref_raw,  (15, 15), 0)
     gray_curr_blur = cv2.GaussianBlur(gray_curr_raw, (15, 15), 0)
@@ -475,7 +601,8 @@ def detect_difference(
     _, binary = cv2.threshold(diff_u8, t_eff, 255, cv2.THRESH_BINARY)
 
     # ── valid_mask: warpPerspective 검은 테두리 제거 ─────────
-    _, valid_mask = cv2.threshold(gray_curr_raw, 1, 255, cv2.THRESH_BINARY)
+    aligned_raw_gray = cv2.cvtColor(aligned_curr_img, cv2.COLOR_BGR2GRAY)
+    _, valid_mask = cv2.threshold(aligned_raw_gray, 1, 255, cv2.THRESH_BINARY)
     valid_mask    = cv2.erode(valid_mask, np.ones((40, 40), np.uint8), iterations=1)
     binary        = cv2.bitwise_and(binary, binary, mask=valid_mask)
 
@@ -489,11 +616,14 @@ def detect_difference(
     # ── 후보 평가 루프 ────────────────────────────────────────
     raw_candidates: list[DiffCandidate] = []
 
-    for c in contours:
+    for index, c in enumerate(contours):
         area = cv2.contourArea(c)
+        x, y, bw, bh = cv2.boundingRect(c)
+        box = (x, y, bw, bh)
 
         # 면적 hard filter (최솟값)
         if area < MIN_AREA:
+            _save_diff_debug_image(debug_prefix, "filtered_area_too_small", ref_img, aligned_curr_img, diff_u8, binary, box, f"idx={index} area={area:.0f}")
             continue
         # 90% 초과는 거의 이미지 전체 → 정합 실패로 판단하여 스킵
         if area > MAX_AREA:
@@ -501,6 +631,7 @@ def detect_difference(
                 "후보 면적 초과(%.0f px², 한도 %.0f px²): 정합 실패 가능성으로 스킵",
                 area, MAX_AREA,
             )
+            _save_diff_debug_image(debug_prefix, "filtered_area_too_large", ref_img, aligned_curr_img, diff_u8, binary, box, f"idx={index} area={area:.0f}")
             continue
 
         area_ratio = area / image_area
@@ -516,7 +647,6 @@ def detect_difference(
             # 1% 미만: 소규모 손상/오염 후보
             candidate_type = "small_damage"
 
-        x, y, bw, bh = cv2.boundingRect(c)
         bbox_area    = bw * bh
 
         # ── Hard filter ───────────────────────────────────────
@@ -525,6 +655,16 @@ def detect_difference(
 
         roi = diff_u8[y : y + bh, x : x + bw]
         mean_diff = float(np.mean(roi))
+
+        if aspect_ratio > ASPECT_RATIO_HARD_LIMIT:
+            _save_diff_debug_image(debug_prefix, "filtered_aspect_ratio", ref_img, aligned_curr_img, diff_u8, binary, box, f"idx={index} aspect={aspect_ratio:.2f}")
+            continue
+        if fill_ratio < FILL_RATIO_MIN:
+            _save_diff_debug_image(debug_prefix, "filtered_sparse_fill", ref_img, aligned_curr_img, diff_u8, binary, box, f"idx={index} fill={fill_ratio:.2f}")
+            continue
+        if mean_diff < MEAN_DIFF_MIN:
+            _save_diff_debug_image(debug_prefix, "filtered_weak_diff", ref_img, aligned_curr_img, diff_u8, binary, box, f"idx={index} mean={mean_diff:.1f}")
+            continue
 
         if aspect_ratio > ASPECT_RATIO_HARD_LIMIT:
             continue  # 얇고 긴 형태 — 정합 경계 아티팩트
@@ -550,6 +690,53 @@ def detect_difference(
         ref_edges   = cv2.Canny(ref_crop,  50, 150)
         curr_edges  = cv2.Canny(curr_crop, 50, 150)
         edge_change = float(np.mean(cv2.absdiff(ref_edges, curr_edges)))
+        gradient_residual = float(np.mean(cv2.absdiff(_gradient_magnitude(ref_crop), _gradient_magnitude(curr_crop))))
+
+        ref_lab_crop = cv2.cvtColor(ref_img[y1:y2, x1:x2], cv2.COLOR_BGR2LAB)
+        curr_lab_crop = cv2.cvtColor(normalized_curr_img[y1:y2, x1:x2], cv2.COLOR_BGR2LAB)
+        chroma_delta = float(np.mean(cv2.absdiff(ref_lab_crop[:, :, 1:], curr_lab_crop[:, :, 1:])))
+
+        if gradient_residual < GRADIENT_RESIDUAL_MIN and chroma_delta < CHROMA_DELTA_MIN:
+            _save_diff_debug_image(
+                debug_prefix,
+                "filtered_low_structure_residual",
+                ref_img,
+                aligned_curr_img,
+                diff_u8,
+                binary,
+                box,
+                f"idx={index} grad={gradient_residual:.1f} chroma={chroma_delta:.1f}",
+            )
+            continue
+
+        if candidate_type == "large_object" and (
+            edge_change < LARGE_OBJECT_MIN_EDGE_CHANGE
+            or gradient_residual < LARGE_OBJECT_MIN_GRADIENT_RESIDUAL
+        ):
+            _save_diff_debug_image(
+                debug_prefix,
+                "filtered_large_object_weak_structure",
+                ref_img,
+                aligned_curr_img,
+                diff_u8,
+                binary,
+                box,
+                f"idx={index} edge={edge_change:.1f} grad={gradient_residual:.1f}",
+            )
+            continue
+
+        if candidate_type == "small_damage" and gradient_residual < SMALL_DAMAGE_MIN_GRADIENT_RESIDUAL:
+            _save_diff_debug_image(
+                debug_prefix,
+                "filtered_small_damage_weak_gradient",
+                ref_img,
+                aligned_curr_img,
+                diff_u8,
+                binary,
+                box,
+                f"idx={index} grad={gradient_residual:.1f}",
+            )
+            continue
 
         # 이미지 가장자리 근접 여부
         is_near_edge = (
@@ -575,7 +762,7 @@ def detect_difference(
             # diff_strength(30%): 전후 차이 강도
             diff_strength_score = min(max(mean_diff - MEAN_DIFF_MIN, 0.0) / (255.0 - MEAN_DIFF_MIN), 1.0)
             # boundary_score(25%): 경계 edge 변화 (객체 윤곽)
-            boundary_score = min(edge_change / 30.0, 1.0)
+            boundary_score = min(max(edge_change, gradient_residual) / 34.0, 1.0)
             # locality_score(15%): 전역 밝기 변화가 낮을수록 국소 변화로 신뢰
             locality_score = max(0.0, 1.0 - brightness_delta / 80.0)
 
@@ -615,12 +802,20 @@ def detect_difference(
             fill_score = min(max(fill_ratio - FILL_RATIO_MIN, 0.0) / (1.0 - FILL_RATIO_MIN), 1.0)
             diff_score = min(max(mean_diff - MEAN_DIFF_MIN, 0.0) / (255.0 - MEAN_DIFF_MIN), 1.0)
             edge_score = min(edge_change / 30.0, 1.0)
-            base_score = fill_score * 0.20 + diff_score * 0.35 + edge_score * 0.45
+            gradient_score = min(gradient_residual / 34.0, 1.0)
+            chroma_score = min(chroma_delta / 30.0, 1.0)
+            base_score = (
+                fill_score * 0.16
+                + diff_score * 0.28
+                + edge_score * 0.28
+                + gradient_score * 0.20
+                + chroma_score * 0.08
+            )
 
             # 조명/그림자 감점
             lighting_penalty = 0.0
-            if edge_change < 10.0 and brightness_delta > 25.0:
-                lighting_penalty = min(brightness_delta / 80.0, 1.0) * 0.40
+            if max(edge_change, gradient_residual) < 16.0 and brightness_delta > 20.0:
+                lighting_penalty = min(brightness_delta / 70.0, 1.0) * 0.48
 
             score = round(
                 max(0.0, min(1.0, base_score - lighting_penalty - aspect_penalty - edge_proximity_penalty)),
@@ -647,6 +842,18 @@ def detect_difference(
 
     # ── 디버그 로그 ───────────────────────────────────────────
     above_threshold = [c for c in raw_candidates if c.score >= DISPLAY_SCORE_THRESHOLD]
+    for c in raw_candidates:
+        if c.score < DISPLAY_SCORE_THRESHOLD:
+            _save_diff_debug_image(
+                debug_prefix,
+                "filtered_low_score",
+                ref_img,
+                aligned_curr_img,
+                diff_u8,
+                binary,
+                c.box,
+                f"score={c.score:.3f} type={c.candidate_type}",
+            )
     logger.debug(
         "전후 차이 후보 총 %d건 | score threshold(%.2f) 이상: %d건 | 최종 표시: 최대 %d건",
         len(raw_candidates),
@@ -666,4 +873,16 @@ def detect_difference(
         key=lambda c: c.score + (0.10 if c.candidate_type == "large_object" else 0.0),
         reverse=True,
     )
-    return above_threshold[:MAX_CANDIDATES]
+    final_candidates = above_threshold[:MAX_CANDIDATES]
+    for c in final_candidates:
+        _save_diff_debug_image(
+            debug_prefix,
+            "selected_candidate",
+            ref_img,
+            aligned_curr_img,
+            diff_u8,
+            binary,
+            c.box,
+            f"score={c.score:.3f} type={c.candidate_type}",
+        )
+    return final_candidates

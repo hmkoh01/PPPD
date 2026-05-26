@@ -231,3 +231,10 @@ export function uploadIssueCloseup(
 export function retakeIssue(issueId: number): Promise<Issue> {
   return apiFetch(`/api/issues/${issueId}/retake`, { method: "PATCH" });
 }
+
+export function clearIssue(issueId: number, studentNote?: string): Promise<Issue> {
+  return apiFetch(`/api/issues/${issueId}/clear`, {
+    method: "PATCH",
+    body: JSON.stringify({ student_note: studentNote?.trim() || null }),
+  });
+}

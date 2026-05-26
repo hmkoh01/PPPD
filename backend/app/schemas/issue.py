@@ -26,3 +26,7 @@ class CloseupUploadResponse(BaseModel):
     closeup_image_url: str | None = None
     result: str
     reason: str
+
+
+class IssueClearRequest(BaseModel):
+    student_note: str | None = None

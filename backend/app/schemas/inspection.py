@@ -52,3 +52,6 @@ class AlignmentCheckResponse(BaseModel):
     hints: list[str] = []
     good_matches: int | None = None
     inlier_ratio: float | None = None
+    ssim_score: float | None = None
+    residual_score: float | None = None
+    ssim_ready: bool = False

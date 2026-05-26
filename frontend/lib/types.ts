@@ -114,6 +114,9 @@ export interface AlignmentCheckResponse {
   hints: string[];
   good_matches?: number | null;
   inlier_ratio?: number | null;
+  ssim_score?: number | null;
+  residual_score?: number | null;
+  ssim_ready?: boolean;
 }
 
 export interface CloseupResponse {
